@@ -295,8 +295,19 @@ const SPORTS_KEYWORDS = [
   "miami","tampa","boston","brooklyn","philadelphia","washington dc",
   "dallas","kansas city","las vegas","anaheim","san jose","columbus",
 
-  // Sports-specific words
-  "soccer","basketball","baseball","hockey","golf score","tennis match",
+  // Sports stats & prop bet terms
+  "runs scored","total runs","rbi","rbis","batting","slugging","on-base",
+  "strikeout","stolen base","earned run","complete game","no-hitter",
+  "points scored","field goal","three pointer","free throw","rebound",
+  "plus minus","flagrant","technical foul","double double","triple double",
+  "goals scored","power play","penalty shot","hat trick","clean sheet",
+  "rushing yards","passing yards","receiving yards","reception","sack",
+  "interception","fumble","two-point","punt","kickoff","snap",
+  "player props","prop bet","anytime scorer","first scorer","last scorer",
+  "over 0.5","over 1.5","over 2.5","over 3.5","over 4.5","over 5.5",
+  "over 6.5","over 7.5","over 8.5","over 9.5","over 10.5",
+  "ian happ","aaron judge","kyle tucker","freddie freeman","max fried",
+  "logan webb","shea langeliers","yordan alvarez","xavier edwards",
   "racing","driver wins","team wins","team loses","win the series",
   "nfl week","nba season","mlb season","nhl season","college game",
   "super bowl mvp","world series mvp","nba mvp","nfl mvp","cy young",
@@ -304,13 +315,31 @@ const SPORTS_KEYWORDS = [
 ];
 
 function isSportsMarket(market) {
-  const text = `${market.title} ${market.ticker}`.toLowerCase();
-  // Direct keyword match
+  const text  = `${market.title} ${market.ticker}`.toLowerCase();
+  const title = market.title || "";
+
+  // 1. Direct keyword match
   if (SPORTS_KEYWORDS.some(kw => text.includes(kw))) return true;
-  // Pattern: "yes [City]" or "no [City]" — typical sports market format
-  if (/\b(yes|no)\s+[a-z]+,\s*(yes|no)\s+[a-z]+/i.test(market.title)) return true;
-  // KX prefix with team abbreviations (Kalshi sports tickers)
-  if (/^KX[A-Z]{2,5}(NFL|NBA|MLB|NHL|MLS|NCAA)/i.test(market.ticker)) return true;
+
+  // 2. Player stat markets: "yes [Name]: 1+", "yes [Name]: 2+" etc.
+  //    These are always sports — no financial market uses this format
+  if (/yes\s+[a-z][\w\s]+:\s*\d+\+/i.test(title)) return true;
+
+  // 3. Over/under stat lines: "Over 9.5 runs", "Over 1.5 hits", "Over 22.5 points"
+  if (/over\s+\d+\.?\d*\s*(runs|hits|rbis?|home runs?|strikeouts?|points|assists|rebounds|goals|saves|touchdowns|yards|receptions|baskets)/i.test(title)) return true;
+
+  // 4. Sports stat terms anywhere in title
+  if (/\b(runs scored|hits?|rbis?|era|batting avg|on-base|slugging|home run|strikeout|stolen base|points scored|field goals?|three.?pointers?|free throws?|rebounds|assists|blocks|steals|plus.minus|goals? scored|power play|penalty|shutout|rushing yards|passing yards|receiving yards|touchdowns?|sacks?|interceptions?)\b/i.test(title)) return true;
+
+  // 5. "yes [City/Team abbreviation]" multi-team patterns — sports bracket markets
+  if (/\b(yes|no)\s+[a-z]{2,}\s*,\s*(yes|no)\s+[a-z]{2,}/i.test(title)) return true;
+
+  // 6. Kalshi sports ticker patterns: KXNFL, KXNBA, KXMLB, KXNHL, KXNCAA, etc.
+  if (/^KX[A-Z]*(NFL|NBA|MLB|NHL|MLS|NCAA|PGA|UFC|NASCAR|F1)/i.test(market.ticker)) return true;
+
+  // 7. "New York Y" = Yankees, common abbreviation dodge
+  if (/new york [a-z]$/i.test(title)) return true;
+
   return false;
 }
 
