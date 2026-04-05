@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -22,1523 +23,1332 @@
   <script type="text/babel">
     const { useState, useEffect, useCallback, useRef } = React;
 
-// ─── Cloudflare Worker (user deploys once — stays a simple CORS proxy) ────────
-const WORKER_CODE = `// Kalshi CORS Proxy — deploy at workers.cloudflare.com (free)
-// IMPORTANT: If you deployed this before, redeploy with this exact code.
-// The Kalshi API URL changed to api.elections.kalshi.com
-const KALSHI = "https://api.elections.kalshi.com/trade-api/v2";
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, KALSHI-ACCESS-KEY, KALSHI-ACCESS-SIGNATURE, KALSHI-ACCESS-TIMESTAMP",
-};
-export default {
-  async fetch(req) {
-    if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
-    const url = new URL(req.url);
-    const target = KALSHI + url.pathname + url.search;
-    const headers = {};
-    for (const [k, v] of req.headers) {
-      if (!["host","origin","referer"].includes(k)) headers[k] = v;
-    }
-    const res = await fetch(target, {
-      method: req.method, headers,
-      body: req.method !== "GET" ? req.body : undefined,
-    });
-    return new Response(await res.text(), {
-      status: res.status,
-      headers: { "Content-Type": "application/json", ...CORS },
-    });
-  },
-};`;
+// ─── Cloudflare Worker code ───────────────────────────────────────────────────
+const WORKER_CODE = `const KALSHI = "https://api.elections.kalshi.com/trade-api/v2"; const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, KALSHI-ACCESS-KEY, KALSHI-ACCESS-SIGNATURE, KALSHI-ACCESS-TIMESTAMP", }; export default { async fetch(req) { if (req.method === "OPTIONS") return new Response(null, { headers: CORS }); const url = new URL(req.url); const target = KALSHI + url.pathname + url.search; const headers = {}; for (const [k, v] of req.headers) { if (!["host","origin","referer"].includes(k)) headers[k] = v; } const res = await fetch(target, { method: req.method, headers, body: req.method !== "GET" ? req.body : undefined }); return new Response(await res.text(), { status: res.status, headers: { "Content-Type": "application/json", ...CORS } }); }, };`;
 
-// ─── RSA-PSS signing via Web Crypto API ──────────────────────────────────────
-// Web Crypto only accepts PKCS#8 ("BEGIN PRIVATE KEY").
-// Kalshi sometimes gives PKCS#1 ("BEGIN RSA PRIVATE KEY") — convert it first.
-
-function asn1Len(len) {
-  if (len < 0x80) return new Uint8Array([len]);
-  if (len < 0x100) return new Uint8Array([0x81, len]);
-  return new Uint8Array([0x82, (len >> 8) & 0xff, len & 0xff]);
+// ─── RSA-PSS signing ─────────────────────────────────────────────────────────
+function asn1Len(l) {
+if (l < 0x80) return new Uint8Array([l]);
+if (l < 0x100) return new Uint8Array([0x81, l]);
+return new Uint8Array([0x82, (l >> 8) & 0xff, l & 0xff]);
 }
-function asn1Wrap(tag, content) {
-  const l = asn1Len(content.length);
-  const out = new Uint8Array(1 + l.length + content.length);
-  out[0] = tag; out.set(l, 1); out.set(content, 1 + l.length);
-  return out;
+function asn1Wrap(tag, c) {
+const l = asn1Len(c.length), o = new Uint8Array(1 + l.length + c.length);
+o[0] = tag; o.set(l, 1); o.set(c, 1 + l.length); return o;
 }
-function concatU8(...arrs) {
-  const out = new Uint8Array(arrs.reduce((s, a) => s + a.length, 0));
-  let i = 0; for (const a of arrs) { out.set(a, i); i += a.length; }
-  return out;
+function concat(…a) {
+const o = new Uint8Array(a.reduce((s, x) => s + x.length, 0));
+let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o;
 }
 function pkcs1ToPkcs8(der) {
-  // Wrap PKCS#1 DER in PKCS#8 envelope: SEQUENCE { version, algorithmId, OCTET_STRING(pkcs1) }
-  const version   = new Uint8Array([0x02, 0x01, 0x00]);
-  const rsaOid    = new Uint8Array([0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01,0x05,0x00]);
-  const octet     = asn1Wrap(0x04, der);
-  return asn1Wrap(0x30, concatU8(version, rsaOid, octet));
+const v = new Uint8Array([0x02,0x01,0x00]);
+const oid = new Uint8Array([0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01,0x05,0x00]);
+return asn1Wrap(0x30, concat(v, oid, asn1Wrap(0x04, der)));
 }
-
 async function importPrivateKey(pem) {
-  // Accept: PKCS#8 ("BEGIN PRIVATE KEY"), PKCS#1 ("BEGIN RSA PRIVATE KEY"), or raw base64
-  const isPkcs1 = pem.includes("RSA PRIVATE KEY");
-  // Strip any PEM headers/footers and ALL whitespace to get clean base64
-  const clean = pem
-    .replace(/-----[^-]+-----/g, "")
-    .replace(/\s+/g, "");
-  if (!clean) throw new Error("Empty key — nothing to import.");
-  let der = Uint8Array.from(atob(clean), c => c.charCodeAt(0));
-  if (isPkcs1) der = pkcs1ToPkcs8(der);
-  return crypto.subtle.importKey(
-    "pkcs8", der.buffer,
-    { name: "RSA-PSS", hash: "SHA-256" },
-    false, ["sign"]
-  );
+const isPkcs1 = pem.includes(“RSA PRIVATE KEY”);
+const clean = pem.replace(/—–[^-]+—–/g, “”).replace(/\s+/g, “”);
+if (!clean) throw new Error(“Empty key”);
+let der = Uint8Array.from(atob(clean), c => c.charCodeAt(0));
+if (isPkcs1) der = pkcs1ToPkcs8(der);
+return crypto.subtle.importKey(“pkcs8”, der.buffer, { name:“RSA-PSS”, hash:“SHA-256” }, false, [“sign”]);
+}
+async function rsaSign(key, keyId, method, path) {
+const ts = Date.now().toString();
+const msg = new TextEncoder().encode(`${ts}${method}${path.split("?")[0]}`);
+const sig = await crypto.subtle.sign({ name:“RSA-PSS”, saltLength:32 }, key, msg);
+return { “KALSHI-ACCESS-KEY”: keyId, “KALSHI-ACCESS-TIMESTAMP”: ts, “KALSHI-ACCESS-SIGNATURE”: btoa(String.fromCharCode(…new Uint8Array(sig))) };
 }
 
-async function rsaSign(cryptoKey, timestamp, method, pathWithoutQuery) {
-  const msg = new TextEncoder().encode(`${timestamp}${method}${pathWithoutQuery}`);
-  const sig = await crypto.subtle.sign({ name: "RSA-PSS", saltLength: 32 }, cryptoKey, msg);
-  return btoa(String.fromCharCode(...new Uint8Array(sig)));
+// ─── Kalshi API ───────────────────────────────────────────────────────────────
+const KALSHI_BASE = “https://api.elections.kalshi.com/trade-api/v2”;
+let _proxy = “”, _keyId = “”, _key = null;
+function setProxy(url) { _proxy = url.replace(//+$/, “”); }
+async function setCredentials(keyId, pem) { _keyId = keyId.trim(); _key = await importPrivateKey(pem); }
+
+async function kalshiReq(path, method = “GET”, body = null) {
+const base = _proxy || KALSHI_BASE;
+const authH = await rsaSign(_key, _keyId, method, “/trade-api/v2” + path);
+const h = { “Content-Type”: “application/json”, …authH };
+const opts = { method, headers: h };
+if (!_proxy) opts.mode = “cors”;
+if (body) opts.body = JSON.stringify(body);
+let res;
+try { res = await fetch(`${base}${path}`, opts); }
+catch (e) {
+const m = e.message || “”;
+if (!*proxy && (m.includes(“Failed to fetch”) || m.includes(“Load failed”) || m.includes(“NetworkError”))) throw new Error(“CORS_BLOCKED”);
+throw e;
+}
+if (!res.ok) {
+const t = await res.text().catch(() => “”);
+let d = t;
+try { const j = JSON.parse(t); d = j.message || j.error || j.detail || t; } catch (*) {}
+throw new Error(`HTTP ${res.status}: ${d}`);
+}
+return res.json();
 }
 
-// ─── Kalshi API layer ─────────────────────────────────────────────────────────
-const KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2";
-let _proxyBase  = "";
-let _keyId      = "";
-let _cryptoKey  = null;   // CryptoKey — set after successful import
-
-function setProxy(url) { _proxyBase = url.replace(/\/+$/, ""); }
-async function setCredentials(keyId, pemText) {
-  _keyId     = keyId.trim();
-  _cryptoKey = await importPrivateKey(pemText);
-}
-
-async function kalshiReq(path, method = "GET", body = null) {
-  const base  = _proxyBase || KALSHI_BASE;
-  const ts    = Date.now().toString();
-  const signPath = ("/trade-api/v2" + path).split("?")[0];
-  const sig   = await rsaSign(_cryptoKey, ts, method, signPath);
-  const h = {
-    "Content-Type":            "application/json",
-    "KALSHI-ACCESS-KEY":       _keyId,
-    "KALSHI-ACCESS-TIMESTAMP": ts,
-    "KALSHI-ACCESS-SIGNATURE": sig,
-  };
-  const opts = { method, headers: h };
-  if (!_proxyBase) opts.mode = "cors";
-  if (body) opts.body = JSON.stringify(body);
-
-  let res;
-  try {
-    res = await fetch(`${base}${path}`, opts);
-  } catch (e) {
-    const msg = e.message || "";
-    if (!_proxyBase && (msg.includes("Failed to fetch") || msg.includes("Load failed") || msg.includes("NetworkError"))) {
-      throw new Error("CORS_BLOCKED");
-    }
-    throw e;
-  }
-
-  if (!res.ok) {
-    // Try to get the actual Kalshi error text — show it verbatim so nothing is hidden
-    const rawText = await res.text().catch(() => "");
-    let detail = rawText;
-    try {
-      const j = JSON.parse(rawText);
-      detail = j.message || j.error || j.detail || j.code || rawText;
-    } catch (_) {}
-    throw new Error(`HTTP ${res.status}: ${detail}`);
-  }
-  return res.json();
-}
-
-// Normalize markets: handle both old integer-cents fields and new _dollars strings
+function d2c(d) { return d != null ? Math.round(parseFloat(d) * 100) : null; }
 function normalizeMarket(m) {
-  const d2c = (d) => d != null ? Math.round(parseFloat(d) * 100) : null;
-  return {
-    ...m,
-    yes_bid:    m.yes_bid    ?? d2c(m.yes_bid_dollars)    ?? m.last_price ?? 50,
-    yes_ask:    m.yes_ask    ?? d2c(m.yes_ask_dollars)    ?? null,
-    no_bid:     m.no_bid     ?? d2c(m.no_bid_dollars)     ?? null,
-    no_ask:     m.no_ask     ?? d2c(m.no_ask_dollars)     ?? null,
-    last_price: m.last_price ?? d2c(m.last_price_dollars) ?? 50,
-  };
+const yb = m.yes_bid ?? d2c(m.yes_bid_dollars) ?? m.last_price ?? 50;
+const ya = m.yes_ask ?? d2c(m.yes_ask_dollars) ?? yb + 4;
+const nb = m.no_bid  ?? d2c(m.no_bid_dollars)  ?? (100 - ya);
+const lp = m.last_price ?? d2c(m.last_price_dollars) ?? 50;
+const vol = m.volume ?? m.volume_24h ?? 0;
+return { …m, yes_bid: yb, yes_ask: ya, no_bid: nb, last_price: lp, volume: vol };
 }
 
-const getMarkets   = ()           => kalshiReq(`/markets?limit=100&status=open`).then(d => ({ ...d, markets: (d.markets || []).map(normalizeMarket) }));
-const getBalance   = ()           => kalshiReq("/portfolio/balance");
-const getPositions = ()           => kalshiReq("/portfolio/positions");
+const getMarkets = (cursor = “”) => {
+const p = new URLSearchParams({ limit: 200, status: “open” });
+if (cursor) p.set(“cursor”, cursor);
+return kalshiReq(`/markets?${p}`).then(d => ({ …d, markets: (d.markets || []).map(normalizeMarket) }));
+};
+const getBalance   = () => kalshiReq(”/portfolio/balance”);
+const getPositions = () => kalshiReq(”/portfolio/positions”);
 const placeOrder   = (ticker, side, count, price) =>
-  kalshiReq("/orders", "POST", {
-    ticker, action: "buy", side, count, type: "limit",
-    yes_price: side === "yes" ? price : 100 - price,
-    no_price:  side === "no"  ? price : 100 - price,
-    time_in_force: "immediate_or_cancel",   // replaces deprecated expiration_ts
-  });
+kalshiReq(”/orders”, “POST”, {
+ticker, action: “buy”, side, count, type: “limit”,
+yes_price: side === “yes” ? price : 100 - price,
+no_price:  side === “no”  ? price : 100 - price,
+time_in_force: “immediate_or_cancel”,
+});
 
-// ─── AI News Engine ──────────────────────────────────────────────────────────
-async function fetchNewsSignal(marketTitle, marketProb) {
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-      messages: [{
-        role: "user",
-        content: `Search for the very latest news about: "${marketTitle}". Current market probability: ${marketProb}%.
-Respond ONLY with valid JSON — no markdown, no preamble:
-{"headlines":[{"title":"...","sentiment":"bullish"|"bearish"|"neutral","source":"..."}],"overall":"bullish"|"bearish"|"neutral","adjustment":<integer -15 to +15>,"confidence":<0-100>,"reasoning":"<one sentence>","recommended_side":"yes"|"no"|"skip"}`
-      }]
-    })
-  });
-  const data = await res.json();
-  const text = data.content.filter(b => b.type === "text").map(b => b.text).join("");
-  const clean = text.replace(/```json|```/g, "").trim();
-  const s = clean.indexOf("{"), e = clean.lastIndexOf("}");
-  return JSON.parse(clean.slice(s, e + 1));
+// ─── Category Filter ──────────────────────────────────────────────────────────
+// Kalshi’s official categories — we whitelist everything except sports
+const ALLOWED_CATEGORIES = new Set([
+“politics”,“political”,“crypto”,“cryptocurrency”,“culture”,“economics”,“economic”,
+“tech”,“technology”,“science”,“elections”,“election”,“climate”,“environment”,
+“companies”,“company”,“financials”,“financial”,“finance”,“markets”,“weather”,
+“business”,“health”,“international”,“mentions”,“entertainment”,
+]);
+const BLOCKED_CATEGORIES = new Set([“sports”,“sport”]);
+
+// Sports player name patterns — “yes FirstName LastName: N+”
+const PLAYER_STAT_RE = /^yes\s+[A-Z][a-z]+\s+[A-Z][a-z]+\s*:/;
+// Over/under scoring lines
+const OVER_UNDER_RE  = /\b(over|under)\s+\d+.?\d*\s*(runs?|hits?|rbis?|points?|goals?|assists?|rebounds?|yards?|touchdowns?|saves?|strikeouts?|home runs?|stolen bases?)/i;
+// Sports bracket: “yes Team1, yes Team2”
+const BRACKET_RE     = /\b(yes|no)\s+[A-Z][a-z]+.*,\s*(yes|no)\s+[A-Z][a-z]+/;
+
+function isSportsMarket(m) {
+// 1. Use category field if Kalshi provides it
+const cat = (m.category || m.event_category || “”).toLowerCase();
+if (BLOCKED_CATEGORIES.has(cat)) return true;
+// Don’t do further checks if category is explicitly allowed
+if (cat && ALLOWED_CATEGORIES.has(cat)) return false;
+
+const title = m.title || “”;
+const ticker = m.ticker || “”;
+
+// 2. Player stat prop market pattern
+if (PLAYER_STAT_RE.test(title)) return true;
+// 3. Over/under scoring
+if (OVER_UNDER_RE.test(title)) return true;
+// 4. Sports bracket market
+if (BRACKET_RE.test(title)) return true;
+// 5. Kalshi sports ticker format
+if (/^KX[A-Z]*(NFL|NBA|MLB|NHL|MLS|NCAA|PGA|UFC|NASCAR)/i.test(ticker)) return true;
+// 6. Explicit sports keywords (last resort — shorter list now that category does the heavy lifting)
+const t = `${title} ${ticker}`.toLowerCase();
+const SW = [“nfl game”,“nba game”,“mlb game”,“nhl game”,“super bowl”,“world series”,“stanley cup”,
+“nba finals”,“touchdown”,“home run”,“hat trick”,“slam dunk”,“overtime shootout”,
+“runs scored”,“rbis”,“stolen base”,“strikeouts”,“rushing yards”,“passing yards”,
+“over 0.5 goals”,“over 1.5 goals”,“series winner”,“game winner”];
+return SW.some(kw => t.includes(kw));
 }
 
-// ─── Strategy (corrected) ─────────────────────────────────────────────────────
+// ─── Weather Analysis ─────────────────────────────────────────────────────────
+async function fetchWeatherSignal(marketTitle) {
+const res = await fetch(“https://api.anthropic.com/v1/messages”, {
+method: “POST”,
+headers: { “Content-Type”: “application/json” },
+body: JSON.stringify({
+model: “claude-sonnet-4-20250514”,
+max_tokens: 600,
+tools: [{ type: “web_search_20250305”, name: “web_search” }],
+messages: [{ role: “user”, content:
+`Search for current weather forecasts, meteorological data, and climate patterns relevant to: "${marketTitle}" Look at NOAA, Weather.com, AccuWeather, or NWS data. Respond ONLY with valid JSON: {"adjustment":<-15 to +15>,"confidence":<0-100>,"reasoning":"<one sentence>","recommended_side":"yes"|"no"|"skip","source":"<weather source used>"}` }]
+})
+});
+const data = await res.json();
+const text = data.content.filter(b => b.type === “text”).map(b => b.text).join(””);
+const s = text.indexOf(”{”), e = text.lastIndexOf(”}”);
+return JSON.parse(text.slice(s, e + 1));
+}
+
+// ─── Strategy — Multiple Edges ────────────────────────────────────────────────
 function daysUntil(iso) { return (new Date(iso) - Date.now()) / 86400000; }
-
 function urgencyMult(days) {
-  if (days < 0.5) return 1.5;
-  if (days < 1)   return 1.25;
-  if (days < 2)   return 1.1;
-  return 1.0;
+if (days < 0.5) return 1.5; if (days < 1) return 1.25;
+if (days < 2) return 1.1;   if (days < 4) return 1.05; return 1.0;
 }
 
-// FIXED: proper Kelly for prediction market contracts
-// b = payout odds (profit per $1 risked), p = estimated win probability
-function kellySize(estWinProb, contractPriceCents, fraction, maxCents, days) {
-  // Guard: price must be >0 and <100 to avoid division by zero / NaN
-  if (!contractPriceCents || contractPriceCents <= 0 || contractPriceCents >= 100) return 0;
-  if (!maxCents || maxCents <= 0) return 0;
-  const cost = contractPriceCents / 100;
-  const b    = (1 - cost) / cost;
-  const p    = Math.min(0.97, Math.max(0.03, estWinProb || 0.5));
-  const q    = 1 - p;
-  const f    = Math.max(0, (b * p - q) / b);
-  const sized = f * fraction * maxCents * urgencyMult(days);
-  const result = Math.min(Math.round(sized), maxCents);
-  return isNaN(result) ? 0 : result;
+function kellySize(estWinProb, priceCents, fraction, maxCents, days) {
+if (!priceCents || priceCents <= 0 || priceCents >= 100 || !maxCents) return 0;
+const cost = priceCents / 100;
+const b = (1 - cost) / cost;
+const p = Math.min(0.97, Math.max(0.03, estWinProb || 0.5));
+const f = Math.max(0, (b * p - (1 - p)) / b);
+const r = Math.min(Math.round(f * fraction * maxCents * urgencyMult(days)), maxCents);
+return isNaN(r) ? 0 : r;
 }
 
-// Auto-scale exposure every $100 gain from $100 start
-function calcMaxExposure(balanceCents, startCents = 10000) {
-  if (!balanceCents || isNaN(balanceCents)) return 5000;
-  const gain = Math.max(0, balanceCents - startCents);
-  const steps = Math.floor(gain / 10000);
-  return 5000 + steps * 5000;
+function analyzeMarket(market, config, extraData = null) {
+if (isSportsMarket(market)) return null;
+
+const yesBid = market.yes_bid ?? 50;
+const yesAsk = market.yes_ask ?? yesBid + 4;
+const noBid  = market.no_bid  ?? (100 - yesAsk);
+const vol    = market.volume ?? 0;
+const sum    = yesBid + noBid;
+const days   = daysUntil(market.close_time);
+
+// Guard: skip markets with no real pricing
+if (yesBid <= 0 || noBid <= 0) return null;
+
+// ── 1. ARBITRAGE ─────────────────────────────────────────────────────────
+if (sum <= 93) {
+const profit = 100 - sum;
+return { signal:“ARB”, side:“yes”, estWinProb:1.0, contractPrice:yesBid,
+edge:profit/100, label:`Arb +${profit.toFixed(1)}¢`, color:”#00ff88”, quality:100,
+why:`YES(${yesBid}¢)+NO(${noBid}¢)=${sum}¢ < $1 — guaranteed profit` };
 }
 
-// ─── Sports Filter ────────────────────────────────────────────────────────────
-const SPORTS_KEYWORDS = [
-  // Leagues & governing bodies
-  "nfl","nba","nhl","mlb","nascar","mls","ncaa","ncaaf","ncaab",
-  "ufc","mma","boxing","pga","lpga","atp","wta","wnba","cfl",
-  "f1","formula 1","formula one","indycar","motogp",
-  "wimbledon","us open","french open","australian open","roland garros",
-  "uefa","fifa","champions league","europa league","premier league",
-  "la liga","bundesliga","serie a","ligue 1","eredivisie",
-  "super bowl","world cup","stanley cup","world series","nba finals",
-  "march madness","college football","bowl game","playoff","playoffs",
-  "championship game","title game","conference final",
+const mid = (yesBid + (100 - noBid)) / 2;
 
-  // Sports actions & positions
-  "touchdown","home run","hat trick","slam dunk","field goal","free throw",
-  "quarterback","pitcher","goalie","goalkeeper","striker","wide receiver",
-  "running back","tight end","linebacker","shortstop","outfielder",
-  "match winner","set winner","first half","second half","halftime",
-  "overtime","shootout","penalty kick","extra innings","inning",
-  "three-pointer","slam dunk","fastbreak","power play","face-off",
-
-  // Generic sport identifiers
-  "win the","wins the","win tonight","win today","score","scored",
-  "beats ","beat the","defeats","defeated","vs.","at home","away game",
-  "cover the spread","point spread","moneyline","over/under",
-
-  // NFL teams
-  "patriots","chiefs","eagles","cowboys","packers","bears","rams","49ers",
-  "seahawks","saints","buccaneers","falcons","panthers","cardinals",
-  "giants","jets","dolphins","bills","ravens","steelers","browns","bengals",
-  "broncos","raiders","chargers","vikings","lions","texans","colts","titans","jaguars",
-
-  // NBA teams
-  "lakers","celtics","warriors","bucks","heat","nets","knicks","76ers",
-  "raptors","nuggets","suns","clippers","mavericks","rockets","spurs",
-  "thunder","blazers","jazz","timberwolves","pelicans","hawks","hornets",
-  "wizards","pistons","cavaliers","pacers","magic","kings","grizzlies",
-
-  // MLB teams
-  "yankees","red sox","dodgers","cubs","astros","mets","braves","cardinals",
-  "giants","phillies","nationals","mariners","rangers","athletics","angels",
-  "blue jays","padres","rockies","diamondbacks","brewers","twins","tigers",
-  "white sox","orioles","rays","royals","pirates","reds","marlins",
-
-  // NHL teams
-  "maple leafs","bruins","blackhawks","penguins","rangers","canadiens",
-  "lightning","capitals","blues","sharks","ducks","kings","flames","oilers",
-  "canucks","senators","sabres","red wings","hurricanes","devils","islanders",
-  "flyers","coyotes","wild","predators","stars","jets","avalanche","golden knights",
-
-  // Sports cities — key differentiator for "yes Pittsburgh" style markets
-  "pittsburgh","cleveland","cincinnati","baltimore","buffalo","nashville",
-  "jacksonville","indianapolis","houston","tennessee","carolina","new england",
-  "green bay","minnesota","detroit","chicago","milwaukee","memphis",
-  "oklahoma city","portland","sacramento","new orleans","salt lake",
-  "san antonio","denver","phoenix","orlando","charlotte","atlanta",
-  "miami","tampa","boston","brooklyn","philadelphia","washington dc",
-  "dallas","kansas city","las vegas","anaheim","san jose","columbus",
-
-  // Sports stats & prop bet terms
-  "runs scored","total runs","rbi","rbis","batting","slugging","on-base",
-  "strikeout","stolen base","earned run","complete game","no-hitter",
-  "points scored","field goal","three pointer","free throw","rebound",
-  "plus minus","flagrant","technical foul","double double","triple double",
-  "goals scored","power play","penalty shot","hat trick","clean sheet",
-  "rushing yards","passing yards","receiving yards","reception","sack",
-  "interception","fumble","two-point","punt","kickoff","snap",
-  "player props","prop bet","anytime scorer","first scorer","last scorer",
-  "over 0.5","over 1.5","over 2.5","over 3.5","over 4.5","over 5.5",
-  "over 6.5","over 7.5","over 8.5","over 9.5","over 10.5",
-  "ian happ","aaron judge","kyle tucker","freddie freeman","max fried",
-  "logan webb","shea langeliers","yordan alvarez","xavier edwards",
-  "racing","driver wins","team wins","team loses","win the series",
-  "nfl week","nba season","mlb season","nhl season","college game",
-  "super bowl mvp","world series mvp","nba mvp","nfl mvp","cy young",
-  "heisman","draft pick","trade deadline","free agent",
-];
-
-function isSportsMarket(market) {
-  const text  = `${market.title} ${market.ticker}`.toLowerCase();
-  const title = market.title || "";
-
-  // 1. Direct keyword match
-  if (SPORTS_KEYWORDS.some(kw => text.includes(kw))) return true;
-
-  // 2. Player stat markets: "yes [Name]: 1+", "yes [Name]: 2+" etc.
-  //    These are always sports — no financial market uses this format
-  if (/yes\s+[a-z][\w\s]+:\s*\d+\+/i.test(title)) return true;
-
-  // 3. Over/under stat lines: "Over 9.5 runs", "Over 1.5 hits", "Over 22.5 points"
-  if (/over\s+\d+\.?\d*\s*(runs|hits|rbis?|home runs?|strikeouts?|points|assists|rebounds|goals|saves|touchdowns|yards|receptions|baskets)/i.test(title)) return true;
-
-  // 4. Sports stat terms anywhere in title
-  if (/\b(runs scored|hits?|rbis?|era|batting avg|on-base|slugging|home run|strikeout|stolen base|points scored|field goals?|three.?pointers?|free throws?|rebounds|assists|blocks|steals|plus.minus|goals? scored|power play|penalty|shutout|rushing yards|passing yards|receiving yards|touchdowns?|sacks?|interceptions?)\b/i.test(title)) return true;
-
-  // 5. "yes [City/Team abbreviation]" multi-team patterns — sports bracket markets
-  if (/\b(yes|no)\s+[a-z]{2,}\s*,\s*(yes|no)\s+[a-z]{2,}/i.test(title)) return true;
-
-  // 6. Kalshi sports ticker patterns: KXNFL, KXNBA, KXMLB, KXNHL, KXNCAA, etc.
-  if (/^KX[A-Z]*(NFL|NBA|MLB|NHL|MLS|NCAA|PGA|UFC|NASCAR|F1)/i.test(market.ticker)) return true;
-
-  // 7. "New York Y" = Yankees, common abbreviation dodge
-  if (/new york [a-z]$/i.test(title)) return true;
-
-  return false;
+// ── 2. VOLUME-WEIGHTED MOMENTUM EDGE ──────────────────────────────────────
+// High volume on a clear directional outcome = smart money signal
+// If YES is >65% and volume is high (>$5k traded), the crowd is likely right
+if (config.volumeEdge && vol >= config.minVolume) {
+const spread = yesAsk - yesBid;
+// Tight spread + high volume + clear direction = market has found true price
+if (spread <= 5 && mid >= 65 && mid <= 92) {
+// Ride the consensus — high volume markets tend to be efficient on direction
+const edge = (mid - 62) / 100;  // edge over fair coin
+if (edge >= config.minEdge) {
+return { signal:“VOL”, side:“yes”, estWinProb:mid/100, contractPrice:yesBid,
+edge, label:`Vol ${(vol/1000).toFixed(0)}k @ ${mid.toFixed(0)}%`, color:”#00ff88”, quality:Math.min(85, 60 + Math.floor(vol/5000)),
+why:`High volume (${(vol/1000).toFixed(0)}k) with tight spread confirms ${mid.toFixed(0)}% probability` };
+}
+}
+if (spread <= 5 && mid >= 8 && mid <= 35) {
+const edge = (38 - mid) / 100;
+if (edge >= config.minEdge) {
+return { signal:“VOL”, side:“no”, estWinProb:(100-mid)/100, contractPrice:noBid,
+edge, label:`Vol ${(vol/1000).toFixed(0)}k @ ${mid.toFixed(0)}%`, color:”#00ff88”, quality:Math.min(85, 60 + Math.floor(vol/5000)),
+why:`High volume (${(vol/1000).toFixed(0)}k) confirms NO at ${mid.toFixed(0)}%` };
+}
+}
 }
 
-function analyzeMarket(market, config, newsData = null) {
-  // Hard block: never trade sports markets
-  if (isSportsMarket(market)) return null;
-
-  const yesBid = market.yes_bid ?? market.last_price ?? 50;
-  const yesAsk = market.yes_ask ?? yesBid + 4;
-  const noBid  = market.no_bid  ?? (100 - yesAsk);
-  const sum    = yesBid + noBid;
-
-  // ── 1. ARBITRAGE: YES + NO sum < $1 (guaranteed profit) ──
-  // Threshold: 93 — needs 7¢+ gap to clear Kalshi's ~7% fee on winnings
-  if (sum <= 93) {
-    const profit = 100 - sum;
-    return {
-      signal: "ARB", side: "both",
-      estWinProb: 1.0, contractPrice: sum / 2,
-      edge: profit / 100,
-      label: `Arb +${profit.toFixed(1)}¢`, color: "#00ff88", quality: 100,
-      why: `Risk-free: YES(${yesBid}¢) + NO(${noBid}¢) = ${sum}¢ < $1`,
-    };
-  }
-
-  const marketMid = (yesBid + (100 - noBid)) / 2;
-  const newsAdj   = newsData?.adjustment ?? 0;
-  const newsConf  = newsData?.confidence ?? 0;
-  const adjProb   = Math.max(3, Math.min(97, marketMid + newsAdj)) / 100;
-  const hasStrongNews = newsData && newsConf >= config.newsMinConf && Math.abs(newsAdj) >= 5;
-
-  // ── 2. NEWS SIGNAL: strong news shifts fair value ──
-  // Only fire when AI confidence ≥ threshold (default 65%)
-  if (hasStrongNews) {
-    const side = newsAdj > 0 ? "yes" : "no";
-    const price = side === "yes" ? yesBid : noBid;
-    const estWin = side === "yes" ? adjProb : 1 - adjProb;
-    const marketImplied = side === "yes" ? yesBid / 100 : noBid / 100;
-    const edge = estWin - marketImplied;
-    if (edge >= config.minEdge) {
-      return {
-        signal: "NEWS", side, estWinProb: estWin, contractPrice: price,
-        edge, label: `News ${newsAdj > 0 ? "+" : ""}${newsAdj}¢ (${newsConf}% conf)`,
-        color: "#c084fc", quality: Math.round(70 + newsConf * 0.3),
-        why: `AI news shifts fair value by ${newsAdj}¢ with ${newsConf}% confidence`,
-      };
-    }
-  }
-
-  // ── 3. FADE EXTREMES: only with news confirmation ──
-  // Don't fade without news support — markets can stay extreme
-  if (config.fadeExtremes && hasStrongNews) {
-    const rec = newsData.recommended_side;
-    if (adjProb > 0.90 && rec === "no") {
-      const marketImplied = noBid / 100;
-      const estWin = 1 - adjProb;
-      const edge = estWin - marketImplied;
-      if (edge >= config.minEdge)
-        return {
-          signal: "FADE", side: "no", estWinProb: estWin, contractPrice: noBid,
-          edge, label: `Fade ${(adjProb * 100).toFixed(0)}% + news`, color: "#ff6b6b", quality: 65,
-          why: `Market overpriced at ${adjProb * 100 | 0}% — news supports reversal`,
-        };
-    }
-    if (adjProb < 0.10 && rec === "yes") {
-      const marketImplied = yesBid / 100;
-      const estWin = adjProb;
-      const edge = estWin - marketImplied;
-      if (edge >= config.minEdge)
-        return {
-          signal: "FADE", side: "yes", estWinProb: estWin, contractPrice: yesBid,
-          edge, label: `Fade ${(adjProb * 100).toFixed(0)}% + news`, color: "#ff6b6b", quality: 65,
-          why: `Market underpriced at ${adjProb * 100 | 0}% — news supports this side`,
-        };
-    }
-  }
-
-  // ── 4. MARKET MAKING: DISABLED ──
-  // Kalshi limit orders don't reliably capture spread — removed
-
-  return null;
+// ── 3. FADE EXTREMES (standalone, no news required) ──────────────────────
+// Very extreme markets >92% or <8% tend to be overpriced due to recency bias
+if (config.fadeExtremes) {
+if (mid > 92 && mid <= 98) {
+const edge = (mid - 90) / 100;
+if (edge >= config.minEdge)
+return { signal:“FADE”, side:“no”, estWinProb:(100-mid)/100, contractPrice:noBid,
+edge, label:`Fade ${mid.toFixed(0)}%`, color:”#ff6b6b”, quality:62,
+why:`Market at ${mid.toFixed(0)}% is historically overpriced — fading extreme` };
+}
+if (mid < 8 && mid >= 2) {
+const edge = (10 - mid) / 100;
+if (edge >= config.minEdge)
+return { signal:“FADE”, side:“yes”, estWinProb:mid/100, contractPrice:yesBid,
+edge, label:`Fade ${mid.toFixed(0)}%`, color:”#ff6b6b”, quality:62,
+why:`Market at ${mid.toFixed(0)}% is historically underpriced` };
+}
 }
 
-// ─── Realistic Demo Simulation ───────────────────────────────────────────────
-// The core bug in naive simulation: using our own optimistic edge estimate as
-// the true win probability. That's circular and always prints money.
-// Reality: our edge estimates are noisy. We realize only a fraction of claimed edge.
-const EDGE_REALIZATION = { ARB: 1.00, NEWS: 0.35, FADE: 0.20 };
-const FILL_RATE        = { ARB: 1.00, NEWS: 0.72, FADE: 0.68 };  // limit orders don't always fill
-const KALSHI_FEE_PCT   = 0.07;  // Kalshi takes ~7% of winning profits
+// ── 4. WEATHER SIGNAL ────────────────────────────────────────────────────
+if (extraData?.type === “weather” && extraData.confidence >= config.newsMinConf && Math.abs(extraData.adjustment) >= 5) {
+const adj = extraData.adjustment;
+const adjMid = Math.max(3, Math.min(97, mid + adj));
+const side = adj > 0 ? “yes” : “no”;
+const price = side === “yes” ? yesBid : noBid;
+const estWin = side === “yes” ? adjMid/100 : (100-adjMid)/100;
+const marketImplied = price / 100;
+const edge = estWin - marketImplied;
+if (edge >= config.minEdge)
+return { signal:“WTHR”, side, estWinProb:estWin, contractPrice:price,
+edge, label:`Weather ${adj>0?"+":""}${adj}¢ (${extraData.confidence}%)`, color:”#38bdf8”, quality:65,
+why:`Weather data: ${extraData.reasoning}` };
+}
+
+return null;
+}
+
+// ─── Paper Trade Simulation ───────────────────────────────────────────────────
+const EDGE_REAL   = { ARB:1.00, VOL:0.55, FADE:0.25, WTHR:0.45 };
+const FILL_RATE   = { ARB:1.00, VOL:0.78, FADE:0.65, WTHR:0.70 };
+const KALSHI_FEE  = 0.07;
 
 function simulateTrade(signal, priceCents, costCents) {
-  const type = signal.signal;
-
-  // Simulate fill — limit orders frequently miss on fast-moving markets
-  const fillRate = FILL_RATE[type] ?? 0.70;
-  if (Math.random() > fillRate) return { filled: false };
-
-  // True win probability: market implied + fraction of our claimed edge
-  const marketImplied  = priceCents / 100;
-  const claimedEdge    = signal.estWinProb - marketImplied;
-  const realizedEdge   = claimedEdge * (EDGE_REALIZATION[type] ?? 0.30);
-  // Add noise — markets are noisy even when we're right
-  const noise          = (Math.random() - 0.5) * 0.06;
-  const trueWinProb    = Math.max(0.02, Math.min(0.98, marketImplied + realizedEdge + noise));
-
-  const won    = Math.random() < trueWinProb;
-  const payout = won ? Math.round(costCents * ((100 - priceCents) / priceCents)) : 0;
-  const fee    = won ? Math.round(payout * KALSHI_FEE_PCT) : 0;
-  const net    = won ? payout - fee : -costCents;
-
-  return { filled: true, won, net, fee, trueWinProb };
+if (!priceCents || priceCents <= 0 || !costCents || costCents <= 0) return { filled:false };
+const type = signal.signal;
+if (Math.random() > (FILL_RATE[type] ?? 0.70)) return { filled:false };
+const implied = priceCents / 100;
+const claimed = signal.estWinProb - implied;
+const realized = claimed * (EDGE_REAL[type] ?? 0.30);
+const noise  = (Math.random() - 0.5) * 0.06;
+const trueP  = Math.max(0.02, Math.min(0.98, implied + realized + noise));
+const won    = Math.random() < trueP;
+const payout = won ? Math.round(costCents * ((100 - priceCents) / priceCents)) : 0;
+const fee    = won ? Math.round(payout * KALSHI_FEE) : 0;
+return { filled:true, won, net: won ? payout - fee : -costCents, fee, trueWinProb:trueP };
 }
 
-// ─── Performance Tracker ─────────────────────────────────────────────────────
-function initStats() {
-  return {
-    ARB:  { trades: 0, wins: 0, totalReturn: 0 },
-    NEWS: { trades: 0, wins: 0, totalReturn: 0 },
-    FADE: { trades: 0, wins: 0, totalReturn: 0 },
-  };
+// ─── Circuit Breaker ──────────────────────────────────────────────────────────
+// Stops trading automatically if too many errors or consecutive losses
+function makeCircuitBreaker() {
+let errors = 0, consecLosses = 0;
+const RESET_MS = 10 * 60 * 1000; // reset error count every 10 min
+let lastErrorTs = 0;
+return {
+recordError() {
+if (Date.now() - lastErrorTs > RESET_MS) errors = 0;
+errors++; lastErrorTs = Date.now();
+return errors;
+},
+recordLoss() { consecLosses++; return consecLosses; },
+recordWin()  { consecLosses = 0; },
+shouldTrip(maxErrors = 5, maxLosses = 6) {
+return errors >= maxErrors || consecLosses >= maxLosses;
+},
+reset() { errors = 0; consecLosses = 0; },
+status() { return { errors, consecLosses }; },
+};
+}
+const breaker = makeCircuitBreaker();
+
+// ─── Metrics ──────────────────────────────────────────────────────────────────
+function initMetrics() {
+return {
+evaluated: 0,    // markets scanned
+signalsFound: 0, // signals generated
+attempted: 0,    // orders attempted
+filled: 0,       // orders that filled
+wins: 0,
+losses: 0,
+dollarPlaced: 0, // cents
+dollarEarned: 0, // cents (net P&L)
+bySignal: {
+ARB:  { attempted:0, filled:0, wins:0, losses:0, placed:0, earned:0 },
+VOL:  { attempted:0, filled:0, wins:0, losses:0, placed:0, earned:0 },
+FADE: { attempted:0, filled:0, wins:0, losses:0, placed:0, earned:0 },
+WTHR: { attempted:0, filled:0, wins:0, losses:0, placed:0, earned:0 },
+},
+};
 }
 
-// ─── Mock Data ───────────────────────────────────────────────────────────────
-function mockMarkets() {
-  const n = Date.now();
-  // no_bid = 100 - yes_ask (correct market structure — bid+bid should sum to 97-99, NOT trigger ARB)
-  // A real ARB needs yes_bid + no_bid < 94 after fees — these are all normal markets
-  return [
-    { ticker:"NASDAQ-up-today", title:"NASDAQ closes up today?",          yes_bid:62,yes_ask:66,no_bid:34,last_price:63, close_time:new Date(n+0.3*864e5).toISOString(), volume:82000  },
-    { ticker:"SPY-530-fri",     title:"SPY above $530 by Friday close?",  yes_bid:53,yes_ask:58,no_bid:42,last_price:55, close_time:new Date(n+1.8*864e5).toISOString(), volume:120000 },
-    { ticker:"GOLD-2400",       title:"Gold above $2,400 by Friday?",     yes_bid:74,yes_ask:79,no_bid:21,last_price:77, close_time:new Date(n+1.5*864e5).toISOString(), volume:34000  },
-    { ticker:"AAPL-200",        title:"AAPL stays above $200 this week?", yes_bid:44,yes_ask:49,no_bid:51,last_price:46, close_time:new Date(n+2.9*864e5).toISOString(), volume:55000  },
-    { ticker:"BTC-70k",         title:"BTC above $70k by Sunday?",        yes_bid:17,yes_ask:22,no_bid:78,last_price:18, close_time:new Date(n+2.6*864e5).toISOString(), volume:210000 },
-    { ticker:"FED-cut-may",     title:"Fed cuts rates in May 2026?",      yes_bid:32,yes_ask:37,no_bid:63,last_price:34, close_time:new Date(n+3.4*864e5).toISOString(), volume:95000  },
-    { ticker:"CPI-3pct",        title:"CPI below 3% in next report?",     yes_bid:69,yes_ask:74,no_bid:26,last_price:71, close_time:new Date(n+4.2*864e5).toISOString(), volume:67000  },
-    { ticker:"TSLA-earnings",   title:"TSLA beats earnings estimates?",   yes_bid:88,yes_ask:93,no_bid:7, last_price:91, close_time:new Date(n+4.8*864e5).toISOString(), volume:180000 },
-    { ticker:"USD-up",          title:"USD index up this week?",          yes_bid:46,yes_ask:51,no_bid:49,last_price:48, close_time:new Date(n+2.1*864e5).toISOString(), volume:28000  },
-    { ticker:"JOBLESS-250k",    title:"Jobless claims under 250k?",       yes_bid:8, yes_ask:13,no_bid:87,last_price:9,  close_time:new Date(n+3.9*864e5).toISOString(), volume:41000  },
-  ].sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
-}
-
-// ─── Live Config ($100 account) ───────────────────────────────────────────────
+// ─── Config ───────────────────────────────────────────────────────────────────
 const LIVE_CFG = {
-  startBalanceCents: 10000,   // $100 starting balance
-  maxBetCents:       500,     // $5 max per trade (5% of account)
-  kellyFraction:     0.25,    // 25% Kelly — conservative given edge uncertainty
-  minEdge:           0.03,    // 3% minimum edge
-  newsMinConf:       65,      // 65% minimum AI confidence to trade on news
-  scanIntervalSec:   30,
-  daysWindow:        14,
-  fadeExtremes:      false,   // disabled until we have track record
-  stopLossPct:       0.20,    // halt auto-trade if down 20% ($20 on $100)
-  maxTradesPerScan:  3,
+startBalanceCents: 10000,
+maxBetCents:       500,
+kellyFraction:     0.25,
+minEdge:           0.03,
+newsMinConf:       65,
+scanIntervalSec:   30,
+daysWindow:        14,    // 14-day window
+fadeExtremes:      true,
+volumeEdge:        true,
+minVolume:         5000,  // min $50 volume for VOL signal
+stopLossPct:       0.20,
+maxTradesPerScan:  3,
+circuitMaxErrors:  5,
+circuitMaxLosses:  6,
 };
 
-// ════════════════════════════════════════════════════════════════════════════════
-// localStorage helpers — save/load credentials so user doesn't re-enter them
-const LS_KEY_ID  = "kt_key_id";
-const LS_PEM     = "kt_pem";
-const LS_PROXY   = "kt_proxy";
-const LS_AUTO    = "kt_auto_on";
-
+// ─── localStorage helpers ─────────────────────────────────────────────────────
+const LS = { KEY:“kt_key_id”, PEM:“kt_pem”, PROXY:“kt_proxy”, AUTO:“kt_auto_on”,
+ESTOP:“kt_estop”, METRICS:“kt_metrics”, CFG:“kt_config” };
 function loadSaved() {
-  try {
-    return {
-      keyId:    localStorage.getItem(LS_KEY_ID)  || "",
-      pemText:  localStorage.getItem(LS_PEM)     || "",
-      proxyUrl: localStorage.getItem(LS_PROXY)   || "",
-      autoOn:   localStorage.getItem(LS_AUTO)    === "true",
-    };
-  } catch (_) { return { keyId: "", pemText: "", proxyUrl: "", autoOn: false }; }
+try {
+return {
+keyId:    localStorage.getItem(LS.KEY)   || “”,
+pemText:  localStorage.getItem(LS.PEM)   || “”,
+proxyUrl: localStorage.getItem(LS.PROXY) || “”,
+autoOn:   localStorage.getItem(LS.AUTO)  === “true”,
+eStopped: localStorage.getItem(LS.ESTOP) === “true”,
+};
+} catch { return { keyId:””, pemText:””, proxyUrl:””, autoOn:false, eStopped:false }; }
 }
-function saveCredentials(keyId, pemText, proxyUrl) {
-  try {
-    localStorage.setItem(LS_KEY_ID, keyId);
-    localStorage.setItem(LS_PEM,    pemText);
-    localStorage.setItem(LS_PROXY,  proxyUrl);
-  } catch (_) {}
+function saveCreds(k, p, u) {
+try { localStorage.setItem(LS.KEY, k); localStorage.setItem(LS.PEM, p); localStorage.setItem(LS.PROXY, u); } catch {}
 }
-function clearCredentials() {
-  try {
-    [LS_KEY_ID, LS_PEM, LS_PROXY, LS_AUTO].forEach(k => localStorage.removeItem(k));
-  } catch (_) {}
+function saveAuto(v)   { try { localStorage.setItem(LS.AUTO,  String(v)); } catch {} }
+function saveEStop(v)  { try { localStorage.setItem(LS.ESTOP, String(v)); } catch {} }
+function clearCreds()  { try { Object.values(LS).forEach(k => localStorage.removeItem(k)); } catch {} }
+function saveMetrics(m){ try { localStorage.setItem(LS.METRICS, JSON.stringify(m)); } catch {} }
+function loadMetrics() { try { const v = localStorage.getItem(LS.METRICS); return v ? JSON.parse(v) : initMetrics(); } catch { return initMetrics(); } }
+
+// ─── Mock markets (demo only) ─────────────────────────────────────────────────
+function mockMarkets() {
+const n = Date.now();
+return [
+{ ticker:“FED-RATE-MAY”,    title:“Fed holds rates in May 2026?”,           yes_bid:68,yes_ask:72,no_bid:26,last_price:70, category:“economics”, close_time:new Date(n+2*864e5).toISOString(),  volume:95000  },
+{ ticker:“BTC-70K-WEEK”,    title:“BTC above $70k by end of week?”,         yes_bid:22,yes_ask:26,no_bid:72,last_price:24, category:“crypto”,    close_time:new Date(n+3*864e5).toISOString(),  volume:210000 },
+{ ticker:“CPI-BELOW-3”,     title:“CPI below 3% this report?”,              yes_bid:61,yes_ask:65,no_bid:33,last_price:63, category:“economics”, close_time:new Date(n+4*864e5).toISOString(),  volume:67000  },
+{ ticker:“SPY-530-WEEK”,    title:“SPY above $530 by Friday?”,              yes_bid:53,yes_ask:57,no_bid:41,last_price:55, category:“financials”,close_time:new Date(n+1.5*864e5).toISOString(),volume:120000 },
+{ ticker:“SENATE-BILL”,     title:“Senate passes budget bill this week?”,   yes_bid:38,yes_ask:43,no_bid:55,last_price:40, category:“politics”,  close_time:new Date(n+5*864e5).toISOString(),  volume:42000  },
+{ ticker:“ETH-4K-MONTH”,    title:“ETH above $4k this month?”,              yes_bid:29,yes_ask:34,no_bid:64,last_price:31, category:“crypto”,    close_time:new Date(n+8*864e5).toISOString(),  volume:88000  },
+{ ticker:“TSLA-BEAT”,       title:“TSLA beats earnings estimates?”,         yes_bid:55,yes_ask:59,no_bid:39,last_price:57, category:“companies”, close_time:new Date(n+6*864e5).toISOString(),  volume:180000 },
+{ ticker:“SNOW-CHICAGO”,    title:“Chicago gets >2 inches snow this week?”, yes_bid:18,yes_ask:22,no_bid:76,last_price:20, category:“weather”,   close_time:new Date(n+3.5*864e5).toISOString(),volume:15000  },
+{ ticker:“CLIMATE-BILL”,    title:“EPA releases new climate rule this week?”,yes_bid:44,yes_ask:49,no_bid:49,last_price:46, category:“climate”,  close_time:new Date(n+7*864e5).toISOString(),  volume:28000  },
+{ ticker:“AI-REGULATION”,   title:“Congress holds AI hearing this month?”,  yes_bid:71,yes_ask:75,no_bid:23,last_price:73, category:“tech”,      close_time:new Date(n+9*864e5).toISOString(),  volume:35000  },
+{ ticker:“GOLD-2400”,       title:“Gold above $2,400 by Friday?”,           yes_bid:74,yes_ask:79,no_bid:19,last_price:77, category:“financials”,close_time:new Date(n+1.8*864e5).toISOString(),volume:34000  },
+{ ticker:“USD-INDEX-UP”,    title:“USD index up this week?”,                yes_bid:46,yes_ask:51,no_bid:47,last_price:48, category:“financials”,close_time:new Date(n+4*864e5).toISOString(),  volume:28000  },
+{ ticker:“TRUMP-EXEC”,      title:“Trump signs executive order this week?”, yes_bid:82,yes_ask:86,no_bid:12,last_price:84, category:“politics”,  close_time:new Date(n+2.5*864e5).toISOString(),volume:55000  },
+{ ticker:“SOL-200”,         title:“SOL above $200 by end of week?”,         yes_bid:35,yes_ask:40,no_bid:58,last_price:37, category:“crypto”,    close_time:new Date(n+5.5*864e5).toISOString(),volume:72000  },
+{ ticker:“JOBLESS-250K”,    title:“Jobless claims under 250k?”,             yes_bid:62,yes_ask:67,no_bid:31,last_price:64, category:“economics”, close_time:new Date(n+3*864e5).toISOString(),  volume:41000  },
+].sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
 function KalshiTrader() {
-  const saved = loadSaved();
-  const [screen, setScreen]       = useState("login");
-  const [keyId, setKeyId]         = useState(saved.keyId);
-  const [pemText, setPemText]     = useState(saved.pemText);
-  const [proxyUrl, setProxyUrl]   = useState(saved.proxyUrl);
-  const [savedCreds, setSavedCreds] = useState(!!(saved.keyId && saved.pemText));
-  const [demo, setDemo]           = useState(false);
-  const [paper, setPaper]         = useState(false);
-  const [loading, setLoading]     = useState(false);
-  const [err, setErr]             = useState("");
-  const [markets, setMarkets]     = useState([]);
-  const [positions, setPositions] = useState([]);
-  const [balance, setBalance]     = useState(null);
-  const [config, setConfig]       = useState(LIVE_CFG);
-  const [log, setLog]             = useState([]);
-  const [stats, setStats]         = useState(initStats());
-  const [pnl, setPnl]             = useState({ realized: 0, unrealized: 0, trades: 0, wins: 0 });
-  const [autoOn, setAutoOn]       = useState(saved.autoOn);
-  const [stopLossHit, setStopLossHit] = useState(false);
-  const [countdown, setCountdown] = useState(0);
-  const [newsCache, setNewsCache] = useState({});
-  const scanRef = useRef(null);
-  const cdRef   = useRef(null);
-  const tradedRef = useRef(new Set()); // tracks tickers traded this session — no re-trading same market
+const saved = loadSaved();
+const [screen, setScreen]         = useState(“login”);
+const [keyId, setKeyId]           = useState(saved.keyId);
+const [pemText, setPemText]       = useState(saved.pemText);
+const [proxyUrl, setProxyUrl]     = useState(saved.proxyUrl);
+const [savedCreds, setSavedCreds] = useState(!!(saved.keyId && saved.pemText));
+const [demo, setDemo]             = useState(false);
+const [paper, setPaper]           = useState(false);
+const [loading, setLoading]       = useState(false);
+const [err, setErr]               = useState(””);
+const [markets, setMarkets]       = useState([]);
+const [positions, setPositions]   = useState([]);
+const [balance, setBalance]       = useState(null);
+const [config, setConfig]         = useState(LIVE_CFG);
+const [log, setLog]               = useState([]);
+const [metrics, setMetrics]       = useState(loadMetrics);
+const [pnl, setPnl]               = useState({ realized:0, unrealized:0 });
+const [autoOn, setAutoOnRaw]      = useState(saved.autoOn);
+const [emergencyStop, setESRaw]   = useState(saved.eStopped);
+const [stopLossHit, setStopLossHit] = useState(false);
+const [countdown, setCountdown]   = useState(0);
+const [weatherCache, setWC]       = useState({});
+const [breakerStatus, setBreakerStatus] = useState({ errors:0, consecLosses:0 });
+const scanRef = useRef(null); const cdRef = useRef(null);
+const tradedRef = useRef(new Set());
 
-  const addLog = useCallback((msg, type = "info") => {
-    setLog(l => [{ ts: new Date().toLocaleTimeString(), msg, type }, ...l].slice(0, 200));
-  }, []);
+const setAutoOn = (v) => { saveAuto(v); setAutoOnRaw(v); };
+const setEStop  = (v) => { saveEStop(v); setESRaw(v); if (v) { setAutoOn(false); addLog(“🛑 EMERGENCY STOP ACTIVATED — all trading halted”, “error”); } };
 
-  // ── Auth ──
-  const handleLogin = async () => {
-    setLoading(true); setErr("");
-    if (proxyUrl.trim()) setProxy(proxyUrl.trim());
+const addLog = useCallback((msg, type=“info”) => {
+setLog(l => [{ ts: new Date().toLocaleTimeString(), msg, type }, …l].slice(0, 300));
+}, []);
 
-    // Step 1: import the private key
-    try {
-      await setCredentials(keyId.trim(), pemText.trim());
-    } catch (e) {
-      setErr("Couldn't read the private key. Paste the full key Kalshi gave you, including the -----BEGIN----- and -----END----- lines at the top and bottom.");
-      setLoading(false); return;
-    }
-
-    // Step 2: hit Kalshi (through proxy if configured)
-    try {
-      await getBalance();
-      saveCredentials(keyId.trim(), pemText.trim(), proxyUrl.trim());
-      setSavedCreds(true);
-      // Default to paper mode on connect — user can switch to live in mode select
-      setScreen("modeselect");
-    } catch (e) {
-      const msg = e.message || "";
-      if (msg === "CORS_BLOCKED" || (!proxyUrl.trim() && (msg.includes("Load failed") || msg.includes("Failed to fetch")))) {
-        setScreen("corserror");
-      } else if (msg.includes("Load failed") || msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
-        setErr("Network error — your proxy URL may be wrong or the Worker isn't deployed. The URL should end in .workers.dev, like: https://my-worker.your-name.workers.dev");
-      } else if (msg.includes("401") || msg.includes("403") || msg.toLowerCase().includes("unauthorized") || msg.toLowerCase().includes("forbidden")) {
-        setErr("Kalshi rejected the key — " + msg + "\n\nGenerate a fresh key pair on kalshi.com → Profile → API Keys.");
-      } else {
-        setErr(msg || "Unknown error.");
-      }
-    }
-    setLoading(false);
-  };
-
-  const handlePaper = () => {
-    setPaper(true); setDemo(false);
-    setBalance(10000); // $100 virtual starting balance
-    tradedRef.current.clear();
-    setScreen("dash");
-    addLog("Paper trading active — real Kalshi markets, simulated orders, $100 virtual balance", "warn");
-    addLog("Edge realization: ARB 100% · NEWS 35% · FADE 20% · 7% fee · 70% fill rate", "warn");
-  };
-
-  const handleGoLive = () => {
-    setPaper(false); setDemo(false);
-    setScreen("dash");
-    addLog("⚡ LIVE MODE — real orders will be placed on Kalshi", "error");
-  };
-
-  const handleDemo = () => {
-    setDemo(true);
-    setBalance(10000);
-    setMarkets(mockMarkets());
-    setScreen("dash");
-    tradedRef.current.clear();
-    addLog("Demo mode: $100 balance · realistic edge realization (ARB 100%, NEWS 35%, FADE 20%) · 7% Kalshi fees · 70% fill rate", "warn");
-  };
-
-  // Expire demo markets as close_time passes, refresh with new ones
-  useEffect(() => {
-    if (!demo) return;
-    const interval = setInterval(() => {
-      setMarkets(prev => {
-        const live = prev.filter(m => new Date(m.close_time) > new Date());
-        if (live.length < prev.length) {
-          const expired = prev.filter(m => new Date(m.close_time) <= new Date());
-          expired.forEach(m => tradedRef.current.delete(m.ticker));
-          // Add replacement markets with fresh expiry times
-          const replacements = mockMarkets()
-            .filter(m => !live.some(l => l.ticker === m.ticker))
-            .slice(0, expired.length);
-          addLog(`${expired.length} market(s) expired — refreshed`, "info");
-          return [...live, ...replacements].sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
-        }
-        return prev;
-      });
-    }, 10000); // check every 10s
-    return () => clearInterval(interval);
-  }, [demo, addLog]);
-
-  // ── Fetch ──
-  const fetchAll = useCallback(async () => {
-    if (demo) return; // demo uses mock data only — paper fetches real Kalshi markets
-    try {
-      const [mData, pData, bData] = await Promise.all([getMarkets(), getPositions(), getBalance()]);
-      const eligible = (mData.markets || [])
-        .filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
-        .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
-      setMarkets(eligible);
-      setPositions(pData.market_positions || []);
-      setBalance(bData.balance || 0);
-    } catch (e) { addLog(`Fetch error: ${e.message}`, "error"); }
-  }, [demo, config.daysWindow, addLog]);
-
-  useEffect(() => { if (!demo && screen !== "login") fetchAll(); }, [demo, screen, fetchAll]);
-
-  // ── News ──
-  const fetchNews = useCallback(async (ticker, title, prob) => {
-    setNewsCache(c => ({ ...c, [ticker]: { loading: true, data: null } }));
-    try {
-      const data = await fetchNewsSignal(title, prob);
-      setNewsCache(c => ({ ...c, [ticker]: { loading: false, data } }));
-      addLog(`News [${ticker}]: ${data.overall} (${data.confidence}% conf, adj ${data.adjustment >= 0 ? "+" : ""}${data.adjustment}¢)`, "news");
-    } catch (e) {
-      setNewsCache(c => ({ ...c, [ticker]: { loading: false, data: null } }));
-      addLog(`News error: ${e.message}`, "error");
-    }
-  }, [addLog]);
-
-  // ── Stop-loss check ──
-  const checkStopLoss = useCallback((bal) => {
-    const floor = config.startBalanceCents * (1 - config.stopLossPct);
-    if (bal < floor) {
-      setStopLossHit(true);
-      setAutoOn(false);
-      addLog(`🛑 STOP-LOSS: Account below $${(floor / 100).toFixed(0)} — auto-trade halted`, "error");
-      return true;
-    }
-    return false;
-  }, [config.startBalanceCents, config.stopLossPct, addLog]);
-
-  // ── Auto-trade scan ──
-  const runScan = useCallback(async () => {
-    if (!autoOn || stopLossHit) return;
-    const currentBal = balance ?? config.startBalanceCents;
-    if (checkStopLoss(currentBal)) return;
-
-    const dynamicExposure = calcMaxExposure(currentBal, config.startBalanceCents);
-    addLog(`Scanning… exposure cap: $${(dynamicExposure / 100).toFixed(0)}`, "info");
-
-    const eligible = markets
-      .filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
-      .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
-
-    let placed = 0;
-    for (const m of eligible) {
-      if (placed >= config.maxTradesPerScan) break;
-      const nc = newsCache[m.ticker]?.data ?? null;
-      const signal = analyzeMarket(m, config, nc);
-      if (!signal || signal.quality < 60) continue;
-
-      // Never trade the same market twice in a session — in reality you hold a position until expiry
-      if (tradedRef.current.has(m.ticker)) continue;
-
-      const days = daysUntil(m.close_time);
-      const price = signal.side === "no" ? m.no_bid : m.yes_bid ?? m.last_price ?? 50;
-      const cost = kellySize(signal.estWinProb, price, config.kellyFraction, config.maxBetCents, days);
-      if (cost < 50) { addLog(`Skip ${m.ticker}: bet size too small`, "info"); continue; }
-
-      addLog(`[${signal.signal}] ${m.title.slice(0, 40)} | bet $${(cost/100).toFixed(2)} | ${signal.label}`, "trade");
-
-      if (demo || paper) {
-        const sim = simulateTrade(signal, price, cost);
-        if (!sim.filled) {
-          addLog(`⟳ Order not filled (limit missed market) — ${m.ticker}`, "info");
-          continue;
-        }
-        setPnl(p => ({ ...p, trades: p.trades + 1, wins: p.wins + (sim.won ? 1 : 0), realized: p.realized + sim.net }));
-        setStats(s => ({
-          ...s,
-          [signal.signal]: {
-            trades: (s[signal.signal]?.trades ?? 0) + 1,
-            wins:   (s[signal.signal]?.wins   ?? 0) + (sim.won ? 1 : 0),
-            totalReturn: (s[signal.signal]?.totalReturn ?? 0) + sim.net,
-          }
-        }));
-        setBalance(b => (b ?? 10000) + sim.net);
-        tradedRef.current.add(m.ticker);
-        const feeNote = sim.fee > 0 ? ` (fee -$${(sim.fee/100).toFixed(2)})` : "";
-        addLog(`${sim.won ? "✓ WIN" : "✗ LOSS"}: ${sim.net >= 0 ? "+" : ""}$${(sim.net/100).toFixed(2)}${feeNote} | true p=${(sim.trueWinProb*100).toFixed(0)}%`, sim.won ? "success" : "error");
-        placed++;
-      } else {
-        try {
-          await placeOrder(m.ticker, signal.side === "both" ? "yes" : signal.side, Math.max(1, Math.round(cost / 10)), price);
-          setPnl(p => ({ ...p, trades: p.trades + 1 }));
-          addLog(`✓ Order placed: ${m.ticker}`, "success");
-          placed++;
-        } catch (e) { addLog(`✗ Order failed: ${e.message}`, "error"); }
-      }
-    }
-    if (placed === 0) addLog("No qualifying signals this scan", "info");
-  }, [autoOn, stopLossHit, balance, config, markets, newsCache, demo, paper, checkStopLoss, addLog]);
-
-  useEffect(() => {
-    try { localStorage.setItem(LS_AUTO, String(autoOn)); } catch (_) {}
-    if (autoOn && !stopLossHit) {
-      runScan();
-      scanRef.current = setInterval(runScan, config.scanIntervalSec * 1000);
-      setCountdown(config.scanIntervalSec);
-      cdRef.current = setInterval(() => setCountdown(c => c <= 1 ? config.scanIntervalSec : c - 1), 1000);
-    } else {
-      clearInterval(scanRef.current); clearInterval(cdRef.current);
-    }
-    return () => { clearInterval(scanRef.current); clearInterval(cdRef.current); };
-  }, [autoOn, stopLossHit, config.scanIntervalSec, runScan]);
-
-  // ── Computed ──
-  const eligible = markets
-    .filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
-    .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
-  const withSig = eligible.map(m => ({
-    ...m,
-    signal: analyzeMarket(m, config, newsCache[m.ticker]?.data ?? null),
-    days: daysUntil(m.close_time),
-  }));
-  const currentBal  = balance ?? config.startBalanceCents;
-  const dynExposure = calcMaxExposure(currentBal, config.startBalanceCents);
-  const gainToNext  = Math.max(0, 10000 - ((currentBal - config.startBalanceCents) % 10000));
-  const fmt$        = c => `$${(c / 100).toFixed(2)}`;
-  const winRate     = pnl.trades > 0 ? ((pnl.wins / pnl.trades) * 100).toFixed(0) : "–";
-
-  const tabs = [
-    { id: "dash",      icon: "⚡", label: "Dash"     },
-    { id: "markets",   icon: "📊", label: "Markets"  },
-    { id: "news",      icon: "📰", label: "AI News"  },
-    { id: "eval",      icon: "📈", label: "Eval"     },
-    { id: "settings",  icon: "⚙️", label: "Settings" },
-  ];
-
-  // ══════════ LOGIN ══════════
-  if (screen === "login") return (
-    <div style={S.wrap}>
-      <div style={{ ...S.card, maxWidth: 420 }}>
-
-        {/* Logo */}
-        <div style={S.logoRow}>
-          <span style={S.logoK}>K</span>
-          <div>
-            <div style={S.logoTitle}>alshi<span style={S.badge("#00ff88")}>AUTO</span></div>
-            <div style={S.logoSub}>Prediction market auto-trader</div>
-          </div>
-        </div>
-
-        {/* SAVED CREDENTIALS — quick connect */}
-        {savedCreds && !err ? (
-          <>
-            <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"14px 16px" }}>
-              <div style={{ fontSize:12, fontWeight:700, color:"#00ff88", marginBottom:4 }}>Welcome back</div>
-              <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>
-                Key ID: <span style={{ color:"#888" }}>{keyId.slice(0,8)}…{keyId.slice(-4)}</span><br/>
-                Proxy: <span style={{ color:"#888" }}>{proxyUrl || "none"}</span>
-              </div>
-            </div>
-            <button style={S.btnG} onClick={handleLogin} disabled={loading}>
-              {loading ? "Connecting…" : "Connect →"}
-            </button>
-            <button style={S.btnGhost} onClick={() => { setSavedCreds(false); setErr(""); }}>
-              Use different credentials
-            </button>
-            {err && (
-              <div style={S.errBox}>
-                <div style={{ fontWeight:700, marginBottom:4 }}>Error</div>
-                <div style={{ fontSize:11, lineHeight:1.6, wordBreak:"break-all" }}>{err}</div>
-              </div>
-            )}
-            <button style={S.btnGhost} onClick={handleDemo}>🎮 Try Demo instead</button>
-          </>
-        ) : (
-          <>
-            {/* Step 1 — get the key from Kalshi */}
-            <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"12px 14px" }}>
-              <div style={{ fontSize:11, fontWeight:700, color:"#00ff88", marginBottom:8 }}>Step 1 — Get your API key from Kalshi</div>
-              <div style={{ fontSize:12, color:"#666", lineHeight:1.7 }}>
-                Go to{" "}
-                <a href="https://kalshi.com/account/profile" target="_blank" rel="noreferrer"
-                  style={{ color:"#00ff88", textDecoration:"none", fontWeight:700 }}>
-                  kalshi.com → Profile → API Keys
-                </a>
-                {" "}and click <strong style={{ color:"#ccc" }}>Generate New API Key</strong>.
-                Kalshi shows you a <strong style={{ color:"#ccc" }}>Key ID</strong> and a{" "}
-                <strong style={{ color:"#ccc" }}>Private Key</strong> — copy both.
-                The private key is only shown once.
-              </div>
-            </div>
-
-            <div style={{ fontSize:11, fontWeight:700, color:"#aaa" }}>Step 2 — Paste them here</div>
-
-            <div style={S.field}>
-              <label style={S.lbl}>Key ID</label>
-              <input style={S.inp} type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                value={keyId} onChange={e => setKeyId(e.target.value)} />
-            </div>
-
-            <div style={S.field}>
-              <label style={S.lbl}>Private Key</label>
-              <textarea style={{ ...S.inp, height:100, resize:"vertical", fontSize:11, lineHeight:1.6 }}
-                placeholder={"-----BEGIN PRIVATE KEY-----\n  or\n-----BEGIN RSA PRIVATE KEY-----\n(both formats work)"}
-                value={pemText} onChange={e => setPemText(e.target.value)} />
-            </div>
-
-            {err && (
-              <div style={S.errBox}>
-                <div style={{ fontWeight:700, marginBottom:4 }}>Error</div>
-                <div style={{ fontSize:11, lineHeight:1.6, wordBreak:"break-all" }}>{err}</div>
-                {(err.includes("401") || err.includes("403") || err.includes("rejected")) && (
-                  <div style={{ marginTop:8, fontSize:11, color:"#ff9966", lineHeight:1.6 }}>
-                    💡 Generate a fresh key pair on kalshi.com → Profile → API Keys.
-                  </div>
-                )}
-              </div>
-            )}
-
-            <button style={{ ...S.btnG, opacity: (keyId && pemText) ? 1 : 0.45 }}
-              onClick={handleLogin} disabled={loading || !keyId || !pemText}>
-              {loading ? "Connecting…" : "Connect →"}
-            </button>
-
-            <ProxyField proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} />
-
-            <button style={S.btnGhost} onClick={handleDemo}>🎮 Try Demo (no account needed)</button>
-            <p style={S.fine}>Real-money trading tool — only trade what you can afford to lose.</p>
-          </>
-        )}
-      </div>
-    </div>
-  );
-
-  // ══════════ MODE SELECT (shown after real login) ══════════
-  if (screen === "modeselect") return (
-    <div style={S.wrap}>
-      <div style={{ ...S.card, gap: 16 }}>
-        <div style={S.logoRow}>
-          <span style={S.logoK}>K</span>
-          <div>
-            <div style={S.logoTitle}>alshi <span style={S.badge("#00ff88")}>AUTO v3</span></div>
-            <div style={S.logoSub}>Account connected ✓ — choose trading mode</div>
-          </div>
-        </div>
-
-        {/* Paper trade option */}
-        <div style={{ background: "#0a1a0f", border: "2px solid #00ff8833", borderRadius: 14, padding: 18, cursor: "pointer" }}
-          onClick={handlePaper}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-            <span style={{ fontSize: 24 }}>📊</span>
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: "#00ff88" }}>Paper Trade</div>
-              <div style={{ fontSize: 11, color: "#555" }}>Real Kalshi markets · Simulated orders</div>
-            </div>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {[
-              "✓ Live market data from your Kalshi account",
-              "✓ $100 virtual balance — no real money at risk",
-              "✓ Realistic simulation: fees, fill rate, edge realization",
-              "✓ Best way to validate the strategy before going live",
-            ].map(t => <span key={t} style={{ fontSize: 11, color: "#555" }}>{t}</span>)}
-          </div>
-          <button style={{ ...S.btnG, marginTop: 14, width: "100%" }}>Start Paper Trading →</button>
-        </div>
-
-        {/* Live option */}
-        <div style={{ background: "#1a0a0a", border: "2px solid #ff3b3033", borderRadius: 14, padding: 18, cursor: "pointer" }}
-          onClick={handleGoLive}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-            <span style={{ fontSize: 24 }}>⚡</span>
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 800, color: "#ff6b6b" }}>Go Live</div>
-              <div style={{ fontSize: 11, color: "#555" }}>Real Kalshi markets · Real orders · Real money</div>
-            </div>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {[
-              "⚠ Real orders will be placed on your Kalshi account",
-              "⚠ Start with $100 account, $50 max exposure",
-              "⚠ Run paper trading first to validate signals",
-            ].map(t => <span key={t} style={{ fontSize: 11, color: "#663333" }}>{t}</span>)}
-          </div>
-          <button style={{ ...S.btnGhost, marginTop: 14, width: "100%", color: "#ff6b6b", borderColor: "#ff3b3033" }}>Go Live — Real Money</button>
-        </div>
-
-        <button style={{ ...S.btnGhost, fontSize: 12 }} onClick={() => { _keyId = ""; _cryptoKey = null; setScreen("login"); }}>← Back</button>
-      </div>
-    </div>
-  );
-
-  // ══════════ CORS ERROR SCREEN ══════════
-  if (screen === "corserror") return (
-    <div style={S.wrap}>
-      <div style={{ ...S.card, gap: 14 }}>
-        <div style={{ fontSize: 28, textAlign: "center" }}>🚧</div>
-        <div style={{ fontSize: 15, fontWeight: 800, textAlign: "center" }}>Browser Blocked the Request</div>
-        <div style={{ fontSize: 12, color: "#555", lineHeight: 1.7, textAlign: "center" }}>
-          Kalshi's API doesn't allow direct browser calls from external apps (CORS policy). You need a free 2-minute proxy to fix this.
-        </div>
-        <SetupGuide expanded />
-        <button style={S.btnG} onClick={() => setScreen("login")}>← Back to Login</button>
-      </div>
-    </div>
-  );
-
-  // ══════════ SHELL ══════════
-  return (
-    <div style={S.shell}>
-      {/* Header */}
-      <div style={S.hdr}>
-        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-          <span style={{ fontSize: 16, fontWeight: 900 }}>K<span style={{ color: "#00ff88" }}>AUTO</span></span>
-          {demo  && <Tag col="#f5a623">DEMO</Tag>}
-          {paper && <Tag col="#00ff88">PAPER</Tag>}
-          {!demo && !paper && <Tag col="#ff6b6b">LIVE</Tag>}
-          <Tag col="#00ff8888">≤{config.daysWindow}d</Tag>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 11, color: "#555" }}>{fmt$(currentBal)}</span>
-          <span style={{ fontSize: 10, color: "#00ff8888" }}>exp {fmt$(dynExposure)}</span>
-          {stopLossHit && <span style={{ fontSize: 9, color: "#ff3b30", fontWeight: 700 }}>🛑 STOPPED</span>}
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: autoOn && !stopLossHit ? "#00ff88" : "#1a1a1a", boxShadow: autoOn && !stopLossHit ? "0 0 8px #00ff88" : "none" }} />
-        </div>
-      </div>
-
-      <div style={{ flex: 1, overflow: "auto" }}>
-        {screen === "dash"     && <DashScreen {...{ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, setStopLossHit, log, countdown, fmt$, config, dynExposure, gainToNext, winRate, currentBal, stats }} />}
-        {screen === "markets"  && <MarketsScreen {...{ markets: withSig, fmt$, addLog, demo, paper, setPnl, setStats, setBalance, config, newsCache, fetchNews, tradedRef }} />}
-        {screen === "news"     && <NewsScreen {...{ markets: withSig, newsCache, fetchNews }} />}
-        {screen === "eval"     && <EvalScreen {...{ stats, pnl, winRate, fmt$, config }} />}
-        {screen === "settings" && <SettingsScreen {...{ config, setConfig, fmt$, onLogout: () => { _keyId = ""; _cryptoKey = null; clearCredentials(); setSavedCreds(false); setKeyId(""); setPemText(""); setProxyUrl(""); setPaper(false); setDemo(false); setAutoOn(false); setScreen("login"); } }} />}
-      </div>
-
-      <div style={S.nav}>
-        {tabs.map(t => (
-          <button key={t.id} style={{ ...S.navBtn, ...(screen === t.id ? { color: "#00ff88" } : {}) }} onClick={() => setScreen(t.id)}>
-            <span style={{ fontSize: 16 }}>{t.icon}</span>
-            <span style={{ fontSize: 8 }}>{t.label}</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+const updMetrics = useCallback((updates) => {
+setMetrics(m => {
+const n = { …m, …updates, bySignal: { …m.bySignal } };
+if (updates.bySignal) {
+for (const [k, v] of Object.entries(updates.bySignal)) {
+n.bySignal[k] = { …m.bySignal[k], …v };
 }
-
-function Tag({ col, children }) {
-  return <span style={{ fontSize: 8, fontWeight: 700, color: col, background: col + "15", border: `1px solid ${col}30`, borderRadius: 3, padding: "2px 5px" }}>{children}</span>;
 }
-function UBadge({ days }) {
-  const [col, txt] = days < 0.5 ? ["#ff3b30","⚡ TODAY"] : days < 1 ? ["#ff6b6b",`${(days*24).toFixed(0)}h`] : days < 2 ? ["#f5a623",`~${days.toFixed(1)}d`] : ["#444",`${days.toFixed(1)}d`];
-  return <span style={{ fontSize: 9, fontWeight: 700, color: col, background: col+"15", borderRadius: 4, padding: "2px 6px", flexShrink: 0 }}>{txt}</span>;
+saveMetrics(n);
+return n;
+});
+}, []);
+
+// ── Auth ──
+const handleLogin = async () => {
+setLoading(true); setErr(””);
+if (proxyUrl.trim()) setProxy(proxyUrl.trim());
+try { await setCredentials(keyId.trim(), pemText.trim()); }
+catch (e) { setErr(“Couldn’t read the private key. Paste the full key including —–BEGIN—– and —–END—– lines.”); setLoading(false); return; }
+try {
+await getBalance();
+saveCreds(keyId.trim(), pemText.trim(), proxyUrl.trim());
+setSavedCreds(true);
+setScreen(“modeselect”);
+} catch (e) {
+const msg = e.message || “”;
+if (msg === “CORS_BLOCKED” || (!proxyUrl.trim() && (msg.includes(“Load failed”) || msg.includes(“Failed to fetch”)))) setScreen(“corserror”);
+else if (msg.includes(“Load failed”) || msg.includes(“Failed to fetch”)) setErr(“Network error — check your proxy URL ends in .workers.dev”);
+else if (msg.includes(“401”) || msg.includes(“403”)) setErr(“Kalshi rejected the key: “ + msg + “ — generate a fresh key pair on kalshi.com”);
+else setErr(msg);
 }
+setLoading(false);
+};
 
-// ══════════ DASHBOARD ══════════
-function DashScreen({ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, setStopLossHit, log, countdown, fmt$, config, dynExposure, gainToNext, winRate, currentBal, stats }) {
-  const total    = pnl.realized + pnl.unrealized;
-  const topSigs  = withSig.filter(m => m.signal && m.signal.quality >= 60).slice(0, 3);
-  const gainPct  = ((currentBal - config.startBalanceCents) / config.startBalanceCents * 100).toFixed(1);
-  const nextStep = gainToNext / 100;
+const handlePaper  = () => { setPaper(true); setDemo(false); setBalance(10000); tradedRef.current.clear(); setScreen(“dash”); addLog(“Paper trading active — real Kalshi markets, simulated orders, $100 virtual balance”, “warn”); };
+const handleLive   = () => { setPaper(false); setDemo(false); setScreen(“dash”); addLog(“⚡ LIVE MODE — real money orders active”, “error”); };
+const handleDemo   = () => { setDemo(true); setBalance(10000); setMarkets(mockMarkets()); tradedRef.current.clear(); setScreen(“dash”); addLog(“Demo mode — mock markets, simulated trades”, “warn”); };
 
-  return (
-    <div style={S.page}>
-      {/* P&L */}
-      <div style={S.pnlCard}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 2, marginBottom: 6 }}>Session P&amp;L</div>
-            <div style={{ fontSize: 40, fontWeight: 900, color: total >= 0 ? "#00ff88" : "#ff6b6b", lineHeight: 1 }}>
-              {total >= 0 ? "+" : ""}{fmt$(Math.abs(total))}
-            </div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 10, color: "#555" }}>Account</div>
-            <div style={{ fontSize: 18, fontWeight: 700, color: "#fff" }}>{fmt$(currentBal)}</div>
-            <div style={{ fontSize: 11, color: total >= 0 ? "#00ff88" : "#ff6b6b" }}>{gainPct >= 0 ? "+" : ""}{gainPct}%</div>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginTop: 4 }}>
-          {[["Realized", fmt$(pnl.realized), "#00ff88"], ["Trades", pnl.trades, "#fff"], ["Win Rate", winRate === "–" ? "–" : winRate+"%", "#00ff88"]].map(([l, v, c]) => (
-            <span key={l} style={{ fontSize: 11, color: "#555" }}>{l} <span style={{ color: c, fontWeight: 700 }}>{v}</span></span>
-          ))}
-        </div>
-      </div>
-
-      {/* Exposure Scaler */}
-      <div style={{ background: "#0a0f14", border: "1px solid #1a2230", borderRadius: 12, padding: "13px 16px" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700 }}>Auto-Scaling Exposure</div>
-            <div style={{ fontSize: 10, color: "#555", marginTop: 2 }}>+$50 exposure per $100 profit</div>
-          </div>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontSize: 14, fontWeight: 800, color: "#00ff88" }}>{fmt$(dynExposure)}</div>
-            <div style={{ fontSize: 10, color: "#555" }}>current cap</div>
-          </div>
-        </div>
-        <div style={{ height: 4, background: "#111", borderRadius: 2, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: `${Math.min(100, ((10000 - gainToNext) / 10000) * 100)}%`, background: "#00ff88", borderRadius: 2, transition: "width 1s" }} />
-        </div>
-        <div style={{ fontSize: 10, color: "#555", marginTop: 5 }}>${nextStep.toFixed(2)} more profit → exposure unlocks to {fmt$(dynExposure + 5000)}</div>
-      </div>
-
-      {/* Auto-Trade Toggle */}
-      <div style={{ background: "#0a0f14", border: `1px solid ${stopLossHit ? "#ff3b3033" : "#1a2230"}`, borderRadius: 12, padding: "13px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-            Auto-Trade
-            {stopLossHit
-              ? <span style={{ fontSize: 10, color: "#ff3b30" }}>🛑 STOP-LOSS HIT</span>
-              : <span style={{ fontSize: 10, color: autoOn ? "#00ff88" : "#444" }}>{autoOn ? `● LIVE — next in ${countdown}s` : "○ OFF"}</span>
-            }
-          </div>
-          <div style={{ fontSize: 10, color: "#444", marginTop: 3 }}>
-            {stopLossHit
-              ? `Halted — account fell 20%+ from start. Reset to resume.`
-              : `Max ${config.maxTradesPerScan} trades/scan · ARB→NEWS→FADE priority`
-            }
-          </div>
-        </div>
-        {stopLossHit
-          ? <button style={{ fontSize: 11, background: "#1a0505", border: "1px solid #ff3b3033", color: "#ff6b6b", borderRadius: 7, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }} onClick={() => { setStopLossHit(false); addLog("Stop-loss reset manually", "warn"); }}>Reset</button>
-          : <div style={{ ...S.toggle, background: autoOn ? "#00ff88" : "#111", border: `1px solid ${autoOn ? "#00ff88" : "#222"}` }} onClick={() => setAutoOn(a => !a)}>
-              <div style={{ ...S.thumb, transform: autoOn ? "translateX(22px)" : "translateX(2px)" }} />
-            </div>
-        }
-      </div>
-
-      {/* Stats row */}
-      <div style={{ display: "flex", gap: 8 }}>
-        {[[eligible.length, "Markets", "#fff"], [withSig.filter(m => m.signal).length, "Signals", "#00ff88"], [Object.values({}).filter ? "–" : "–", "ARB", "#00ff88"]].map(([n, l, c]) => (
-          <div key={l} style={{ flex: 1, background: "#0a0f14", border: "1px solid #1a2230", borderRadius: 10, padding: "11px 8px", textAlign: "center" }}>
-            <div style={{ fontSize: 20, fontWeight: 900, color: c }}>{n}</div>
-            <div style={{ fontSize: 8, color: "#333", textTransform: "uppercase", marginTop: 2 }}>{l}</div>
-          </div>
-        ))}
-        <div style={{ flex: 1, background: "#0a0f14", border: "1px solid #1a2230", borderRadius: 10, padding: "11px 8px", textAlign: "center" }}>
-          <div style={{ fontSize: 20, fontWeight: 900, color: "#ff6b6b" }}>{fmt$(config.startBalanceCents * config.stopLossPct)}</div>
-          <div style={{ fontSize: 8, color: "#333", textTransform: "uppercase", marginTop: 2 }}>Stop-loss</div>
-        </div>
-      </div>
-
-      {/* Top signals */}
-      {topSigs.length > 0 && <>
-        <div style={S.secH}>🔥 Live Signals — soonest expiry first</div>
-        {topSigs.map(m => (
-          <div key={m.ticker} style={{ background: "#0a0f14", borderLeft: `3px solid ${m.signal.color}`, border: "1px solid #1a2230", borderRadius: 10, padding: "12px 14px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-              <span style={{ fontSize: 12, color: "#ccc", flex: 1, lineHeight: 1.4 }}>{m.title}</span>
-              <UBadge days={m.days} />
-            </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: m.signal.color, background: m.signal.color+"11", border: `1px solid ${m.signal.color}33`, borderRadius: 4, padding: "2px 7px" }}>{m.signal.label}</span>
-              <span style={{ fontSize: 10, color: "#555" }}>Quality: {m.signal.quality}/100</span>
-              <span style={{ fontSize: 10, color: "#555" }}>{m.signal.why}</span>
-            </div>
-          </div>
-        ))}
-      </>}
-
-      {/* Log */}
-      <div style={S.secH}>Activity</div>
-      <div style={{ background: "#050709", border: "1px solid #0f1520", borderRadius: 10, padding: "10px 12px", maxHeight: 200, overflowY: "auto" }}>
-        {log.length === 0 && <div style={{ color: "#222", fontSize: 12, textAlign: "center", padding: 16 }}>No activity yet</div>}
-        {log.slice(0, 50).map((l, i) => (
-          <div key={i} style={{ fontSize: 10, lineHeight: 1.9, fontFamily: "monospace", color: { error: "#ff6b6b", success: "#00ff88", warn: "#f5a623", trade: "#88aaff", news: "#c084fc" }[l.type] || "#444" }}>
-            <span style={{ color: "#222", marginRight: 6 }}>{l.ts}</span>{l.msg}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+// ── Fetch ──
+const fetchAll = useCallback(async () => {
+if (demo) return;
+try {
+let all = [], cursor = “”;
+// Paginate to get all markets
+for (let i = 0; i < 5; i++) {
+const data = await getMarkets(cursor);
+all = all.concat(data.markets || []);
+cursor = data.cursor || “”;
+if (!cursor) break;
 }
+const eligible = all
+.filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
+.filter(m => !isSportsMarket(m))
+.sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+setMarkets(eligible);
+const [pData, bData] = await Promise.all([getPositions(), getBalance()]);
+setPositions(pData.market_positions || []);
+setBalance(bData.balance || 0);
+addLog(`Loaded ${eligible.length} eligible markets (${all.length} total, sports filtered)`, “info”);
+} catch (e) { addLog(`Fetch error: ${e.message}`, “error”); }
+}, [demo, config.daysWindow, addLog]);
 
-// ══════════ MARKETS ══════════
-function MarketsScreen({ markets, fmt$, addLog, demo, paper, setPnl, setStats, setBalance, config, newsCache, fetchNews, tradedRef }) {
-  const [filter, setFilter] = useState("signals");
-  const shown = filter === "signals" ? markets.filter(m => m.signal) : markets;
+useEffect(() => { if (!demo && screen === “dash”) fetchAll(); }, [demo, screen, fetchAll]);
 
-  const doTrade = async (m) => {
-    if (!m.signal) return;
-    if (demo && tradedRef.current.has(m.ticker)) {
-      addLog(`Already traded ${m.ticker} — wait for it to expire`, "warn");
-      return;
-    }
-    const price = m.signal.side === "no" ? m.no_bid : m.yes_bid ?? m.last_price ?? 50;
-    const cost  = kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days);
-    addLog(`Manual trade: ${m.ticker} | bet $${(cost/100).toFixed(2)} | ${m.signal.label}`, "trade");
-    if (demo || paper) {
-      const sim = simulateTrade(m.signal, price, cost);
-      if (!sim.filled) {
-        addLog(`⟳ Order not filled — limit order missed the market`, "info");
-        return;
-      }
-      setPnl(p => ({ ...p, trades: p.trades + 1, wins: p.wins + (sim.won ? 1 : 0), realized: p.realized + sim.net }));
-      setStats(s => ({ ...s, [m.signal.signal]: { trades: (s[m.signal.signal]?.trades??0)+1, wins: (s[m.signal.signal]?.wins??0)+(sim.won?1:0), totalReturn: (s[m.signal.signal]?.totalReturn??0)+sim.net } }));
-      setBalance(b => (b ?? 10000) + sim.net);
+// ── Circuit breaker check ──
+const checkBreaker = useCallback(() => {
+if (breaker.shouldTrip(config.circuitMaxErrors, config.circuitMaxLosses)) {
+setAutoOn(false);
+addLog(`🔌 Circuit breaker tripped (${breakerStatus.errors} errors, ${breakerStatus.consecLosses} losses) — trading paused`, “error”);
+return true;
+}
+return false;
+}, [config.circuitMaxErrors, config.circuitMaxLosses, breakerStatus, addLog]);
+
+// ── Stop-loss ──
+const checkStopLoss = useCallback((bal) => {
+const floor = config.startBalanceCents * (1 - config.stopLossPct);
+if (bal < floor) {
+setStopLossHit(true); setAutoOn(false);
+addLog(`🛑 STOP-LOSS: balance $${(bal/100).toFixed(2)} below $${(floor/100).toFixed(2)}`, “error”);
+return true;
+}
+return false;
+}, [config.startBalanceCents, config.stopLossPct, addLog]);
+
+// ── Weather fetch ──
+const fetchWeather = useCallback(async (ticker, title) => {
+setWC(c => ({ …c, [ticker]: { loading:true, data:null } }));
+try {
+const data = await fetchWeatherSignal(title);
+setWC(c => ({ …c, [ticker]: { loading:false, data:{ …data, type:“weather” } } }));
+addLog(`Weather [${ticker}]: ${data.reasoning} (adj ${data.adjustment>0?"+":""}${data.adjustment}¢, ${data.confidence}% conf)`, “info”);
+} catch (e) { setWC(c => ({ …c, [ticker]: { loading:false, data:null } })); }
+}, [addLog]);
+
+// ── Main scan ──
+const runScan = useCallback(async () => {
+if (!autoOn || emergencyStop || stopLossHit) return;
+if (checkBreaker()) return;
+
+```
+const bal = balance ?? config.startBalanceCents;
+if (checkStopLoss(bal)) return;
+
+const exposure = Math.min(5000 + Math.floor(Math.max(0, bal - config.startBalanceCents) / 10000) * 5000, bal * 0.5);
+addLog(`Scanning ${markets.length} markets… exposure cap $${(exposure/100).toFixed(0)}`, "info");
+
+const eligible = markets
+  .filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
+  .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+
+let evaluated = 0, placed = 0;
+
+for (const m of eligible) {
+  if (placed >= config.maxTradesPerScan) break;
+  evaluated++;
+  if (tradedRef.current.has(m.ticker)) continue;
+
+  const isWeather = (m.category || "").toLowerCase() === "weather" || m.title.toLowerCase().includes("weather") || m.title.toLowerCase().includes("snow") || m.title.toLowerCase().includes("rain") || m.title.toLowerCase().includes("temperature") || m.title.toLowerCase().includes("hurricane");
+  const extraData = isWeather ? weatherCache[m.ticker]?.data : null;
+
+  const signal = analyzeMarket(m, config, extraData);
+  if (!signal) continue;
+
+  updMetrics({ evaluated: metrics.evaluated + evaluated, signalsFound: metrics.signalsFound + 1 });
+  evaluated = 0;
+
+  const days  = daysUntil(m.close_time);
+  const price = signal.side === "no" ? m.no_bid : m.yes_bid;
+  const cost  = kellySize(signal.estWinProb, price, config.kellyFraction, config.maxBetCents, days);
+
+  if (cost < 50) { addLog(`Skip ${m.ticker}: bet $${(cost/100).toFixed(2)} too small`, "info"); continue; }
+
+  addLog(`[${signal.signal}] ${m.title.slice(0,45)}… | $${(cost/100).toFixed(2)} | ${signal.label}`, "trade");
+  updMetrics({ attempted: metrics.attempted + 1, bySignal: { [signal.signal]: { attempted: (metrics.bySignal[signal.signal]?.attempted||0)+1 } } });
+
+  if (demo || paper) {
+    const sim = simulateTrade(signal, price, cost);
+    if (!sim.filled) { addLog(`⟳ Limit order not filled — ${m.ticker}`, "info"); continue; }
+
+    tradedRef.current.add(m.ticker);
+    breaker[sim.won ? "recordWin" : "recordLoss"]();
+    setBreakerStatus(breaker.status());
+
+    const fee = sim.fee > 0 ? ` (fee -$${(sim.fee/100).toFixed(2)})` : "";
+    addLog(`${sim.won ? "✓ WIN" : "✗ LOSS"}: ${sim.net >= 0 ? "+" : ""}$${(sim.net/100).toFixed(2)}${fee} | p=${(sim.trueWinProb*100).toFixed(0)}%`, sim.won ? "success" : "error");
+
+    setBalance(b => (b ?? 10000) + sim.net);
+    setPnl(p => ({ ...p, realized: p.realized + sim.net }));
+
+    const sig = signal.signal;
+    updMetrics({
+      filled:      metrics.filled + 1,
+      wins:        metrics.wins   + (sim.won ? 1 : 0),
+      losses:      metrics.losses + (sim.won ? 0 : 1),
+      dollarPlaced: metrics.dollarPlaced + cost,
+      dollarEarned: metrics.dollarEarned + sim.net,
+      bySignal: { [sig]: {
+        filled:  (metrics.bySignal[sig]?.filled ||0)+1,
+        wins:    (metrics.bySignal[sig]?.wins   ||0)+(sim.won?1:0),
+        losses:  (metrics.bySignal[sig]?.losses ||0)+(sim.won?0:1),
+        placed:  (metrics.bySignal[sig]?.placed ||0)+cost,
+        earned:  (metrics.bySignal[sig]?.earned ||0)+sim.net,
+      }}
+    });
+    if (!sim.won) { const n = breaker.recordLoss(); if (n >= config.circuitMaxLosses) checkBreaker(); }
+    placed++;
+  } else {
+    try {
+      await placeOrder(m.ticker, signal.side, Math.max(1, Math.round(cost/10)), price);
       tradedRef.current.add(m.ticker);
-      const feeNote = sim.fee > 0 ? ` (fee -$${(sim.fee/100).toFixed(2)})` : "";
-      addLog(`${sim.won ? "✓ WIN" : "✗ LOSS"}: ${sim.net >= 0 ? "+" : ""}$${(sim.net/100).toFixed(2)}${feeNote} | true p=${(sim.trueWinProb*100).toFixed(0)}%`, sim.won ? "success" : "error");
-    } else {
-      try {
-        await placeOrder(m.ticker, m.signal.side === "both" ? "yes" : m.signal.side, Math.max(1, Math.round(cost / 10)), price);
-        addLog("✓ Order placed", "success"); setPnl(p => ({ ...p, trades: p.trades + 1 }));
-      } catch (e) { addLog(`✗ ${e.message}`, "error"); }
+      addLog(`✓ Order placed: ${m.ticker}`, "success");
+      updMetrics({ filled: metrics.filled+1, attempted: metrics.attempted+1, dollarPlaced: metrics.dollarPlaced+cost });
+      placed++;
+    } catch (e) {
+      const errCount = breaker.recordError();
+      setBreakerStatus(breaker.status());
+      addLog(`✗ Order failed [${errCount} errors]: ${e.message}`, "error");
+      if (checkBreaker()) break;
     }
-  };
-
-  return (
-    <div style={S.page}>
-      <div style={{ display: "flex", gap: 8 }}>
-        {["signals","all"].map(f => (
-          <button key={f} style={{ flex: 1, padding: "9px 0", background: filter === f ? "#00ff8808" : "#0a0f14", border: `1px solid ${filter === f ? "#00ff8830" : "#1a2230"}`, borderRadius: 8, color: filter === f ? "#00ff88" : "#444", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }} onClick={() => setFilter(f)}>
-            {f === "signals" ? "🔥 Qualifying Signals" : "All Markets"}
-          </button>
-        ))}
-      </div>
-
-      {shown.length === 0 && <div style={S.empty}>No qualifying signals.<br/>Load AI news for markets to unlock NEWS signals.</div>}
-
-      {shown.map(m => {
-        const nc = newsCache[m.ticker];
-        const blocked = isSportsMarket(m);
-        const price = m.signal?.side === "no" ? m.no_bid : m.yes_bid ?? m.last_price ?? 50;
-        const cost  = m.signal ? kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days) : 0;
-        return (
-          <div key={m.ticker} style={{ background: blocked ? "#0a0808" : "#0a0f14", border: `1px solid ${blocked ? "#ff3b3022" : "#1a2230"}`, borderLeft: `3px solid ${blocked ? "#ff3b30" : m.signal ? m.signal.color : "#1a2230"}`, borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10, opacity: blocked ? 0.5 : 1 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: blocked ? "#666" : "#ddd", flex: 1, lineHeight: 1.4 }}>{m.title}</div>
-              {blocked ? <span style={{ fontSize: 9, fontWeight: 700, color: "#ff3b30", background: "#ff3b3015", border: "1px solid #ff3b3030", borderRadius: 4, padding: "2px 7px", flexShrink: 0 }}>⛔ SPORTS</span> : <UBadge days={m.days} />}
-            </div>
-            <div style={{ display: "flex" }}>
-              {[["YES",`${m.yes_bid ?? m.last_price}¢`],["NO",`${100-(m.yes_bid??50)}¢`],["VOL",m.volume?(m.volume/1000).toFixed(0)+"k":"–"],["EDGE",m.signal?`${(m.signal.edge*100).toFixed(0)}%`:"–"]].map(([k,v])=>(
-                <div key={k} style={{ flex:1, textAlign:"center" }}>
-                  <div style={{ fontSize:14, fontWeight:700 }}>{v}</div>
-                  <div style={{ fontSize:8, color:"#333", marginTop:2 }}>{k}</div>
-                </div>
-              ))}
-            </div>
-            {!blocked && m.signal && (
-              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:8 }}>
-                <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
-                  <span style={{ fontSize:10, fontWeight:700, color:m.signal.color, background:m.signal.color+"11", border:`1px solid ${m.signal.color}33`, borderRadius:5, padding:"2px 8px", alignSelf:"flex-start" }}>{m.signal.label}</span>
-                  <span style={{ fontSize:9, color:"#555" }}>{m.signal.why} · Bet: {fmt$(cost)}</span>
-                </div>
-                <div style={{ display:"flex", gap:8 }}>
-                  {!nc?.loading && !nc?.data && <button style={S.btnPurple} onClick={() => fetchNews(m.ticker, m.title, m.yes_bid ?? m.last_price ?? 50)}>📰 News</button>}
-                  {nc?.loading && <span style={{ fontSize:11, color:"#c084fc" }}>…</span>}
-                  <button style={S.btnTrade} onClick={() => doTrade(m)}>Trade →</button>
-                </div>
-              </div>
-            )}
-            {!blocked && !m.signal && (
-              <button style={S.btnPurple} onClick={() => fetchNews(m.ticker, m.title, m.yes_bid ?? m.last_price ?? 50)} disabled={nc?.loading}>
-                {nc?.loading ? "Fetching news…" : "📰 Load AI News to find signal"}
-              </button>
-            )}
-            {nc?.data && <NewsSnip data={nc.data} />}
-          </div>
-        );
-      })}
-    </div>
-  );
+  }
 }
+if (evaluated > 0) updMetrics({ evaluated: metrics.evaluated + evaluated });
+if (placed === 0) addLog("No qualifying signals this scan", "info");
+```
 
-function NewsSnip({ data }) {
-  const sc = { bullish:"#00ff88", bearish:"#ff6b6b", neutral:"#888" };
-  return (
-    <div style={{ background:"#0a0610", border:"1px solid #c084fc22", borderRadius:8, padding:"10px 12px" }}>
-      <div style={{ display:"flex", gap:10, alignItems:"center", marginBottom:6 }}>
-        <span style={{ fontWeight:800, fontSize:11, color:sc[data.overall] }}>{data.overall?.toUpperCase()}</span>
-        <span style={{ fontSize:10, color:"#555" }}>Conf {data.confidence}%</span>
-        <span style={{ fontSize:10, fontWeight:700, color:data.adjustment>=0?"#00ff88":"#ff6b6b" }}>Adj {data.adjustment>=0?"+":""}{data.adjustment}¢</span>
-        <span style={{ fontSize:10, color:"#555" }}>→ <strong style={{ color:data.recommended_side==="yes"?"#00ff88":data.recommended_side==="no"?"#ff6b6b":"#555" }}>{data.recommended_side?.toUpperCase()}</strong></span>
-      </div>
-      <p style={{ fontSize:11, color:"#777", margin:"0 0 8px", lineHeight:1.5 }}>{data.reasoning}</p>
-      {data.headlines?.slice(0,2).map((h,i) => (
-        <div key={i} style={{ display:"flex", gap:6, marginBottom:4 }}>
-          <span style={{ color:sc[h.sentiment]||"#555", fontSize:12 }}>{h.sentiment==="bullish"?"▲":h.sentiment==="bearish"?"▼":"●"}</span>
-          <span style={{ fontSize:11, color:"#bbb", lineHeight:1.4, flex:1 }}>{h.title}</span>
-          <span style={{ fontSize:9, color:"#444", flexShrink:0 }}>{h.source}</span>
+}, [autoOn, emergencyStop, stopLossHit, balance, config, markets, weatherCache, demo, paper, metrics, updMetrics, checkBreaker, checkStopLoss, addLog]);
+
+useEffect(() => {
+saveAuto(autoOn);
+if (autoOn && !emergencyStop && !stopLossHit) {
+runScan();
+scanRef.current = setInterval(runScan, config.scanIntervalSec * 1000);
+setCountdown(config.scanIntervalSec);
+cdRef.current = setInterval(() => setCountdown(c => c <= 1 ? config.scanIntervalSec : c-1), 1000);
+} else { clearInterval(scanRef.current); clearInterval(cdRef.current); }
+return () => { clearInterval(scanRef.current); clearInterval(cdRef.current); };
+}, [autoOn, emergencyStop, stopLossHit, config.scanIntervalSec, runScan]);
+
+// Demo market expiry
+useEffect(() => {
+if (!demo) return;
+const iv = setInterval(() => {
+setMarkets(prev => {
+const live = prev.filter(m => new Date(m.close_time) > new Date());
+if (live.length < prev.length) {
+prev.filter(m => new Date(m.close_time) <= new Date()).forEach(m => tradedRef.current.delete(m.ticker));
+return […live, …mockMarkets().filter(m => !live.some(l => l.ticker === m.ticker)).slice(0, prev.length - live.length)]
+.sort((a,b) => new Date(a.close_time) - new Date(b.close_time));
+}
+return prev;
+});
+}, 15000);
+return () => clearInterval(iv);
+}, [demo]);
+
+const eligible = markets
+.filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
+.sort((a,b) => new Date(a.close_time) - new Date(b.close_time));
+const withSig = eligible.map(m => ({
+…m, days: daysUntil(m.close_time),
+signal: analyzeMarket(m, config, weatherCache[m.ticker]?.data),
+}));
+const fmt$  = c => `$${((c||0)/100).toFixed(2)}`;
+const currentBal  = balance ?? config.startBalanceCents;
+const dynExposure = Math.min(5000 + Math.floor(Math.max(0, currentBal - config.startBalanceCents) / 10000) * 5000, currentBal * 0.5);
+const winRate = (metrics.wins + metrics.losses) > 0 ? ((metrics.wins / (metrics.wins + metrics.losses)) * 100).toFixed(0) : “–”;
+
+const tabs = [
+{id:“dash”,     icon:“⚡”, label:“Dash”},
+{id:“markets”,  icon:“📊”, label:“Markets”},
+{id:“metrics”,  icon:“📈”, label:“Metrics”},
+{id:“weather”,  icon:“🌤”, label:“Weather”},
+{id:“settings”, icon:“⚙️”, label:“Settings”},
+];
+
+// LOGIN
+if (screen === “login”) return (
+<div style={S.wrap}>
+<div style={{ …S.card, maxWidth:420 }}>
+<div style={S.logoRow}><span style={S.logoK}>K</span><div>
+<div style={S.logoTitle}>alshi<span style={S.badge(”#00ff88”)}>AUTO</span></div>
+<div style={S.logoSub}>14-day window · Category-filtered · Multi-edge strategy</div>
+</div></div>
+
+```
+    {savedCreds && !err ? (<>
+      <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"14px 16px" }}>
+        <div style={{ fontSize:12, fontWeight:700, color:"#00ff88", marginBottom:4 }}>Welcome back</div>
+        <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>
+          Key: <span style={{color:"#888"}}>{keyId.slice(0,8)}…{keyId.slice(-4)}</span><br/>
+          Proxy: <span style={{color:"#888"}}>{proxyUrl || "none"}</span>
         </div>
+      </div>
+      <button style={S.btnG} onClick={handleLogin} disabled={loading}>{loading?"Connecting…":"Connect →"}</button>
+      <button style={S.btnGhost} onClick={() => { setSavedCreds(false); setErr(""); }}>Use different credentials</button>
+      {err && <div style={S.errBox}><b>Error</b><br/><span style={{fontSize:11}}>{err}</span></div>}
+      <button style={S.btnGhost} onClick={handleDemo}>🎮 Demo Mode</button>
+    </>) : (<>
+      <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"12px 14px" }}>
+        <div style={{ fontSize:11, fontWeight:700, color:"#00ff88", marginBottom:8 }}>Get your API key from Kalshi</div>
+        <div style={{ fontSize:12, color:"#666", lineHeight:1.7 }}>
+          Go to <a href="https://kalshi.com/account/profile" target="_blank" rel="noreferrer" style={{color:"#00ff88",textDecoration:"none",fontWeight:700}}>kalshi.com → Profile → API Keys</a> and click <strong style={{color:"#ccc"}}>Generate New API Key</strong>. Copy the Key ID and Private Key shown — private key is only shown once.
+        </div>
+      </div>
+      <div style={S.field}><label style={S.lbl}>Key ID</label>
+        <input style={S.inp} type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value={keyId} onChange={e=>setKeyId(e.target.value)} /></div>
+      <div style={S.field}><label style={S.lbl}>Private Key</label>
+        <textarea style={{...S.inp,height:90,resize:"vertical",fontSize:11,lineHeight:1.5}}
+          placeholder={"-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"} value={pemText} onChange={e=>setPemText(e.target.value)} /></div>
+      {err && <div style={S.errBox}><b>Error</b><br/><span style={{fontSize:11}}>{err}</span>
+        {(err.includes("401")||err.includes("403")) && <div style={{marginTop:6,fontSize:11,color:"#ff9966"}}>💡 Generate a fresh key pair on kalshi.com → Profile → API Keys</div>}
+      </div>}
+      <button style={{...S.btnG, opacity:(keyId&&pemText)?1:0.45}} onClick={handleLogin} disabled={loading||!keyId||!pemText}>{loading?"Connecting…":"Connect →"}</button>
+      <ProxyField proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} />
+      <button style={S.btnGhost} onClick={handleDemo}>🎮 Demo Mode (no account needed)</button>
+      <p style={S.fine}>Real-money trading tool — only trade what you can afford to lose.</p>
+    </>)}
+  </div>
+</div>
+```
+
+);
+
+// CORS ERROR
+if (screen === “corserror”) return (
+<div style={S.wrap}><div style={{...S.card,gap:14}}>
+<div style={{fontSize:28,textAlign:“center”}}>🚧</div>
+<div style={{fontSize:15,fontWeight:800,textAlign:“center”}}>Browser Blocked the Request</div>
+<div style={{fontSize:12,color:”#555”,lineHeight:1.6,textAlign:“center”}}>Kalshi’s API blocks direct browser calls. You need the free Cloudflare Worker proxy.</div>
+<SetupGuide expanded />
+<button style={S.btnG} onClick={() => setScreen(“login”)}>← Back</button>
+</div></div>
+);
+
+// MODE SELECT
+if (screen === “modeselect”) return (
+<div style={S.wrap}><div style={{...S.card,gap:16}}>
+<div style={S.logoRow}><span style={S.logoK}>K</span><div>
+<div style={S.logoTitle}>alshi<span style={S.badge(”#00ff88”)}>AUTO</span></div>
+<div style={S.logoSub}>Connected ✓ — choose trading mode</div>
+</div></div>
+
+```
+  <div style={{background:"#0a1a0f",border:"2px solid #00ff8833",borderRadius:14,padding:18,cursor:"pointer"}} onClick={handlePaper}>
+    <div style={{fontSize:15,fontWeight:800,color:"#00ff88",marginBottom:6}}>📊 Paper Trading</div>
+    <div style={{display:"flex",flexDirection:"column",gap:5}}>
+      {["✓ Real Kalshi markets — 100s of live non-sports markets","✓ $100 virtual balance — zero real money at risk","✓ Realistic simulation: fees, fill rate, edge realization","✓ Run this for 1-2 days before going live — recommended"].map(t=>(
+        <span key={t} style={{fontSize:11,color:"#555"}}>{t}</span>
       ))}
     </div>
-  );
-}
+    <button style={{...S.btnG,marginTop:12,width:"100%"}}>Start Paper Trading →</button>
+  </div>
 
-// ══════════ NEWS HUB ══════════
-function NewsScreen({ markets, newsCache, fetchNews }) {
-  const loaded   = markets.filter(m => newsCache[m.ticker]?.data).sort((a,b) => a.days - b.days);
-  const pending  = markets.filter(m => !newsCache[m.ticker]).sort((a,b) => a.days - b.days);
-  const fetching = markets.some(m => newsCache[m.ticker]?.loading);
-  const sc = { bullish:"#00ff88", bearish:"#ff6b6b", neutral:"#888" };
-
-  return (
-    <div style={S.page}>
-      <div style={{ background:"linear-gradient(135deg,#080412,#0e0820)", border:"1px solid #c084fc22", borderRadius:14, padding:"16px 18px" }}>
-        <div style={{ fontSize:15, fontWeight:800, color:"#c084fc", marginBottom:6 }}>📰 AI News Intelligence</div>
-        <div style={{ fontSize:12, color:"#555", lineHeight:1.6 }}>Claude searches live news per market. A confidence ≥65% and ≥5¢ adjustment is required before a NEWS signal is generated. Results are sorted by soonest expiry.</div>
-      </div>
-
-      {pending.length > 0 && <button style={S.btnG} onClick={() => pending.slice(0,5).forEach(m => fetchNews(m.ticker, m.title, m.yes_bid ?? m.last_price ?? 50))}>
-        📰 Analyze Top {Math.min(5, pending.length)} Markets (soonest first)
-      </button>}
-
-      {fetching && <div style={{ background:"#0a0610", border:"1px solid #c084fc22", borderRadius:8, padding:"11px 14px", fontSize:12, color:"#c084fc" }}>⟳ Fetching live news…</div>}
-      {loaded.length === 0 && !fetching && <div style={S.empty}>No news loaded yet. Tap above to start.</div>}
-
-      {loaded.map(m => {
-        const nc = m && newsCache[m.ticker].data;
-        if (!nc) return null;
-        const col = sc[nc.overall] || "#888";
-        return (
-          <div key={m.ticker} style={{ background:"#0a0f14", border:"1px solid #1a2230", borderLeft:`3px solid ${col}`, borderRadius:12, padding:14 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", gap:8, marginBottom:10 }}>
-              <div style={{ fontSize:13, fontWeight:600, color:"#ddd", flex:1, lineHeight:1.4 }}>{m.title}</div>
-              <UBadge days={m.days} />
-            </div>
-            <div style={{ display:"flex", gap:12, alignItems:"center", flexWrap:"wrap", marginBottom:8 }}>
-              <span style={{ fontWeight:800, fontSize:12, color:col }}>{nc.overall?.toUpperCase()}</span>
-              <span style={{ fontSize:11, color:"#444" }}>Conf: {nc.confidence}%</span>
-              <span style={{ fontSize:11, fontWeight:700, color:nc.adjustment>=0?"#00ff88":"#ff6b6b" }}>Adj: {nc.adjustment>=0?"+":""}{nc.adjustment}¢</span>
-              <span style={{ fontSize:11, color:"#555" }}>Rec: <strong style={{ color:nc.recommended_side==="yes"?"#00ff88":nc.recommended_side==="no"?"#ff6b6b":"#888" }}>{nc.recommended_side?.toUpperCase()}</strong></span>
-              {nc.confidence >= 65 && Math.abs(nc.adjustment) >= 5
-                ? <span style={{ fontSize:9, color:"#00ff88", background:"#00ff8811", border:"1px solid #00ff8822", borderRadius:4, padding:"2px 6px", fontWeight:700 }}>✓ TRADE ELIGIBLE</span>
-                : <span style={{ fontSize:9, color:"#555", background:"#11111122", border:"1px solid #33333333", borderRadius:4, padding:"2px 6px" }}>Below threshold</span>
-              }
-            </div>
-            <p style={{ fontSize:12, color:"#777", margin:"0 0 10px", lineHeight:1.5 }}>{nc.reasoning}</p>
-            {nc.headlines?.map((h,i) => (
-              <div key={i} style={{ display:"flex", gap:8, marginBottom:8 }}>
-                <span style={{ color:sc[h.sentiment]||"#555", fontSize:14, flexShrink:0 }}>{h.sentiment==="bullish"?"▲":h.sentiment==="bearish"?"▼":"—"}</span>
-                <div><div style={{ fontSize:12, color:"#ccc", lineHeight:1.4 }}>{h.title}</div><div style={{ fontSize:10, color:"#444", marginTop:2 }}>{h.source}</div></div>
-              </div>
-            ))}
-          </div>
-        );
-      })}
+  <div style={{background:"#1a0a0a",border:"2px solid #ff3b3033",borderRadius:14,padding:18,cursor:"pointer"}} onClick={handleLive}>
+    <div style={{fontSize:15,fontWeight:800,color:"#ff6b6b",marginBottom:6}}>⚡ Live Trading</div>
+    <div style={{display:"flex",flexDirection:"column",gap:5}}>
+      {["⚠ Real orders placed on your Kalshi account","⚠ $100 starting balance, $50 max exposure","⚠ Emergency stop available at all times"].map(t=>(
+        <span key={t} style={{fontSize:11,color:"#663333"}}>{t}</span>
+      ))}
     </div>
-  );
-}
+    <button style={{...S.btnGhost,marginTop:12,width:"100%",color:"#ff6b6b",borderColor:"#ff3b3033"}}>Go Live</button>
+  </div>
+  <button style={{...S.btnGhost,fontSize:12}} onClick={() => { _keyId=""; _key=null; setScreen("login"); }}>← Back</button>
+</div></div>
+```
 
-// ══════════ STRATEGY EVAL ══════════
-function EvalScreen({ stats, pnl, winRate, fmt$, config }) {
-  const strategies = [
-    { key:"ARB",  name:"Arbitrage",     col:"#00ff88", desc:"Risk-free guaranteed profit. YES + NO < $1. Extremely rare on liquid markets but zero risk when found.", strength:"Strong",   strCol:"#00ff88" },
-    { key:"NEWS", name:"AI News",       col:"#c084fc", desc:"Real edge when AI detects news before market prices update. Requires 65%+ confidence and 5¢+ adjustment. This is the primary alpha source.", strength:"Moderate", strCol:"#f5a623" },
-    { key:"FADE", name:"Fade Extremes", col:"#f5a623", desc:"Fading >90% or <10% markets. Disabled by default — only enabled when news also supports the fade. Without news, markets can stay extreme indefinitely.", strength:"Weak alone", strCol:"#ff6b6b" },
-  ];
-  const total = pnl.trades;
-  const roi = config.startBalanceCents > 0 ? ((pnl.realized / config.startBalanceCents) * 100).toFixed(1) : "0.0";
+);
 
-  return (
-    <div style={S.page}>
-      <div style={{ background:"linear-gradient(135deg,#0a0f14,#080c14)", border:"1px solid #1a2230", borderRadius:14, padding:"16px 18px" }}>
-        <div style={{ fontSize:15, fontWeight:800, marginBottom:4 }}>Strategy Evaluation</div>
-        <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>Honest assessment of each signal type. Market-making was removed — it does not work on Kalshi's structure. Kelly is fixed to account for asymmetric prediction market payouts.</div>
-      </div>
+// MAIN SHELL
+return (
+<div style={S.shell}>
+{/* Emergency Stop Banner */}
+{emergencyStop && (
+<div style={{background:”#ff3b30”,padding:“10px 16px”,display:“flex”,alignItems:“center”,justifyContent:“space-between”,flexShrink:0}}>
+<span style={{fontSize:12,fontWeight:800,color:”#fff”}}>🛑 EMERGENCY STOP — ALL TRADING HALTED</span>
+<button style={{background:”#fff”,color:”#ff3b30”,border:“none”,borderRadius:6,padding:“4px 12px”,fontSize:11,fontWeight:800,cursor:“pointer”}}
+onClick={() => { setEStop(false); breaker.reset(); setBreakerStatus(breaker.status()); addLog(“Emergency stop cleared — trading re-enabled”, “warn”); }}>
+Clear
+</button>
+</div>
+)}
 
-      {/* Overall stats */}
-      <div style={{ display:"flex", gap:8 }}>
-        {[
-          [winRate === "–" ? "–" : winRate+"%", "Win Rate",  "#00ff88"],
-          [total,                               "Trades",    "#fff"   ],
-          [fmt$(Math.abs(pnl.realized)),        "P&L",       pnl.realized >= 0 ? "#00ff88" : "#ff6b6b"],
-          [roi+"%",                             "ROI",       pnl.realized >= 0 ? "#00ff88" : "#ff6b6b"],
-        ].map(([n,l,c]) => (
-          <div key={l} style={{ flex:1, background:"#0a0f14", border:"1px solid #1a2230", borderRadius:10, padding:"11px 8px", textAlign:"center" }}>
-            <div style={{ fontSize:18, fontWeight:900, color:c }}>{n}</div>
-            <div style={{ fontSize:8, color:"#333", textTransform:"uppercase", marginTop:2 }}>{l}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Per-strategy breakdown */}
-      {strategies.map(({ key, name, col, desc, strength, strCol }) => {
-        const s = stats[key] || { trades:0, wins:0, totalReturn:0 };
-        const wr = s.trades > 0 ? ((s.wins / s.trades) * 100).toFixed(0)+"%" : "–";
-        return (
-          <div key={key} style={{ background:"#0a0f14", border:"1px solid #1a2230", borderLeft:`3px solid ${col}`, borderRadius:12, padding:14 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-              <span style={{ fontWeight:800, fontSize:14, color:col }}>{name}</span>
-              <span style={{ fontSize:10, fontWeight:700, color:strCol, background:strCol+"11", border:`1px solid ${strCol}33`, borderRadius:4, padding:"2px 8px" }}>{strength}</span>
-            </div>
-            <p style={{ fontSize:11, color:"#666", margin:"0 0 10px", lineHeight:1.6 }}>{desc}</p>
-            <div style={{ display:"flex", gap:14 }}>
-              {[["Trades", s.trades, "#fff"], ["Win Rate", wr, "#00ff88"], ["Return", fmt$(Math.abs(s.totalReturn)), s.totalReturn>=0?"#00ff88":"#ff6b6b"]].map(([l,v,c]) => (
-                <div key={l}><span style={{ fontSize:10, color:"#444" }}>{l} </span><span style={{ fontSize:12, fontWeight:700, color:c }}>{v}</span></div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-
-      {/* Honest limitations */}
-      <div style={S.secH}>Known Limitations</div>
-      <div style={{ background:"#0a0f14", border:"1px solid #1a2230", borderRadius:12, padding:14 }}>
-        {[
-          ["Demo uses realistic simulation", "Edge realization: ARB 100%, NEWS 35%, FADE 20%. Fill rate ~70%. Kalshi 7% fee on winnings. True win prob = market implied + fraction of claimed edge + noise."],
-          ["ARB opportunities are very rare", "Liquid Kalshi markets close gaps within seconds. Don't rely on this as a primary strategy."],
-          ["News edge decays fast", "If news is already in market price, the adjustment provides no real edge. AI may lag breaking news."],
-          ["Kelly formula requires accurate edge", "If our win probability estimate is wrong, Kelly can size bets incorrectly. The 25% fraction limits damage."],
-          ["Small account = high variance", "With $100, a few losses will move the needle significantly. 20 trades may not be enough to judge strategy quality."],
-          ["CORS limits live trading", "Direct browser calls to Kalshi may be blocked. Use a proxy or the mobile Kalshi app alongside this tool."],
-        ].map(([t, d]) => (
-          <div key={t} style={{ marginBottom:12 }}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#f5a623", marginBottom:3 }}>⚠ {t}</div>
-            <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>{d}</div>
-          </div>
-        ))}
-      </div>
+```
+  <div style={S.hdr}>
+    <div style={{display:"flex",alignItems:"center",gap:7}}>
+      <span style={{fontSize:16,fontWeight:900}}>K<span style={{color:"#00ff88"}}>AUTO</span></span>
+      {demo && <Tag col="#f5a623">DEMO</Tag>}
+      {paper && !demo && <Tag col="#00ff88">PAPER</Tag>}
+      {!demo && !paper && <Tag col="#ff6b6b">LIVE</Tag>}
+      <Tag col="#00ff8888">≤{config.daysWindow}d</Tag>
     </div>
-  );
-}
-
-// ══════════ SETTINGS ══════════
-function SettingsScreen({ config, setConfig, fmt$, onLogout }) {
-  const set = (k, v) => setConfig(c => ({ ...c, [k]: v }));
-  return (
-    <div style={S.page}>
-      <div style={{ background:"#0a0610", border:"1px solid #c084fc22", borderRadius:12, padding:"13px 16px", marginBottom:4 }}>
-        <div style={{ fontSize:12, fontWeight:700, color:"#c084fc", marginBottom:4 }}>Live Config: $100 Account</div>
-        <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>Starting exposure $50 · Auto-scales +$50 per $100 gain · Stops if account falls 20%</div>
-      </div>
-
-      <div style={S.secH}>Risk Management</div>
-      <div style={{ background:"#0a0f14", border:"1px solid #1a2230", borderRadius:12, overflow:"hidden" }}>
-        {[
-          { l:"Max bet per trade",    k:"maxBetCents",     mn:100,  mx:2000, st:100, d: v => fmt$(v) },
-          { l:"Kelly fraction",       k:"kellyFraction",   mn:10,   mx:50,   st:5,   d: v => `${v}%`, f:100 },
-          { l:"Min edge required",    k:"minEdge",         mn:1,    mx:10,   st:1,   d: v => `${v}%`, f:100 },
-          { l:"News confidence req.", k:"newsMinConf",     mn:50,   mx:90,   st:5,   d: v => `${v}%` },
-          { l:"Stop-loss %",          k:"stopLossPct",     mn:10,   mx:40,   st:5,   d: v => `${v}%`, f:100 },
-          { l:"Days window",          k:"daysWindow",      mn:1,    mx:5,    st:1,   d: v => `${v}d` },
-          { l:"Scan interval",        k:"scanIntervalSec", mn:15,   mx:300,  st:15,  d: v => `${v}s` },
-        ].map(({ l, k, mn, mx, st, d, f }) => {
-          const raw = f ? Math.round(config[k] * f) : config[k];
-          return (
-            <div key={k} style={{ padding:"12px 14px", borderBottom:"1px solid #0f1520" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-                <span style={{ fontSize:12, color:"#666" }}>{l}</span>
-                <span style={{ fontSize:12, color:"#00ff88", fontWeight:700 }}>{d(raw)}</span>
-              </div>
-              <input type="range" min={mn} max={mx} step={st} value={raw} style={{ width:"100%", accentColor:"#00ff88" }}
-                onChange={e => set(k, f ? Number(e.target.value) / f : Number(e.target.value))} />
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={S.secH}>Strategy Toggles</div>
-      <div style={{ background:"#0a0f14", border:"1px solid #1a2230", borderRadius:12, overflow:"hidden" }}>
-        {[
-          { l:"Fade extremes (requires news confirmation)", k:"fadeExtremes" },
-        ].map(({ l, k }) => (
-          <div key={k} style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 14px" }}>
-            <span style={{ fontSize:12, color:"#666", flex:1, marginRight:12 }}>{l}</span>
-            <div style={{ ...S.toggle, width:44, height:24, background:config[k]?"#00ff88":"#111", border:`1px solid ${config[k]?"#00ff88":"#222"}` }} onClick={() => set(k, !config[k])}>
-              <div style={{ ...S.thumb, transform:config[k]?"translateX(20px)":"translateX(2px)" }} />
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div style={S.secH}>Scaling Milestones</div>
-      <div style={{ background:"#0a0f14", border:"1px solid #1a2230", borderRadius:12, padding:14 }}>
-        {[0,1,2,3,4].map(i => {
-          const bal = config.startBalanceCents + i * 10000;
-          const exp = 5000 + i * 5000;
-          return (
-            <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 0", borderBottom:"1px solid #0f1520" }}>
-              <span style={{ fontSize:12, color:"#666" }}>Account {fmt$(bal)}</span>
-              <span style={{ fontSize:12, fontWeight:700, color:"#00ff88" }}>→ {fmt$(exp)} exposure</span>
-            </div>
-          );
-        })}
-      </div>
-
-      <button style={{ background:"transparent", color:"#ff6b6b", border:"1px solid #ff6b6b22", borderRadius:10, padding:"12px 20px", fontSize:13, cursor:"pointer", fontFamily:"inherit" }} onClick={onLogout}>
-        Disconnect
+    <div style={{display:"flex",alignItems:"center",gap:8}}>
+      <span style={{fontSize:11,color:"#555"}}>{fmt$(currentBal)}</span>
+      {/* Emergency Stop Button */}
+      <button onClick={() => setEStop(!emergencyStop)} style={{
+        background: emergencyStop ? "#333" : "#ff3b30", color:"#fff", border:"none", borderRadius:6,
+        padding:"3px 10px", fontSize:10, fontWeight:800, cursor:"pointer", fontFamily:"inherit",
+      }}>
+        {emergencyStop ? "STOPPED" : "🛑 STOP"}
       </button>
+      <div style={{width:8,height:8,borderRadius:"50%",background:autoOn&&!emergencyStop?"#00ff88":"#1a1a1a",boxShadow:autoOn&&!emergencyStop?"0 0 8px #00ff88":"none"}} />
     </div>
-  );
+  </div>
+
+  <div style={{flex:1,overflow:"auto"}}>
+    {screen==="dash"     && <DashScreen {...{pnl,withSig,eligible,autoOn,setAutoOn,emergencyStop,setEStop,stopLossHit,setStopLossHit,log,countdown,fmt$,config,dynExposure,currentBal,winRate,metrics,breakerStatus,breaker,setBreakerStatus}} />}
+    {screen==="markets"  && <MarketsScreen {...{markets:withSig,fmt$,addLog,demo,paper,config,weatherCache,fetchWeather,tradedRef,setPnl,setBalance,updMetrics,metrics}} />}
+    {screen==="metrics"  && <MetricsScreen {...{metrics,winRate,fmt$,pnl,config,resetMetrics:()=>{setMetrics(initMetrics());saveMetrics(initMetrics());}}} />}
+    {screen==="weather"  && <WeatherScreen {...{markets:withSig,weatherCache,fetchWeather,config}} />}
+    {screen==="settings" && <SettingsScreen {...{config,setConfig,fmt$,paper,demo,onLogout:()=>{_keyId="";_key=null;clearCreds();setPaper(false);setDemo(false);setAutoOn(false);setScreen("login");}}} />}
+  </div>
+
+  <div style={S.nav}>
+    {tabs.map(t => (
+      <button key={t.id} style={{...S.navBtn,...(screen===t.id?{color:"#00ff88"}:{})}} onClick={()=>setScreen(t.id)}>
+        <span style={{fontSize:16}}>{t.icon}</span>
+        <span style={{fontSize:8}}>{t.label}</span>
+      </button>
+    ))}
+  </div>
+</div>
+```
+
+);
 }
 
-// ─── Proxy Field (collapsed — only needed for CORS) ──────────────────────────
-function ProxyField({ proxyUrl, setProxyUrl }) {
-  const [open, setOpen] = useState(!!proxyUrl);
-  return (
-    <div style={{ border:"1px solid #1a2230", borderRadius:10, overflow:"hidden" }}>
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", cursor:"pointer", background:"#0a0f14" }}
-        onClick={() => setOpen(o => !o)}>
-        <span style={{ fontSize:11, color:"#555" }}>
-          {proxyUrl ? <span style={{ color:"#00ff88" }}>✓ Proxy configured</span> : "⚙️ CORS proxy (only needed if Connect fails)"}
-        </span>
-        <span style={{ fontSize:11, color:"#444" }}>{open ? "▲" : "▼"}</span>
-      </div>
-      {open && (
-        <div style={{ padding:"0 14px 14px", background:"#0a0f14", display:"flex", flexDirection:"column", gap:8 }}>
-          <p style={{ fontSize:11, color:"#555", margin:0, lineHeight:1.6 }}>
-            If Connect fails with a network error, Kalshi's API is blocking browser requests (CORS).
-            Deploy the free Cloudflare Worker below and paste its URL here.
-          </p>
-          <input style={{ background:"#0e141b", border:"1px solid #1a2230", borderRadius:8, padding:"9px 12px", color:"#fff", fontSize:13, fontFamily:"inherit", outline:"none" }}
-            type="url" placeholder="https://your-worker.workers.dev"
-            value={proxyUrl} onChange={e => setProxyUrl(e.target.value)} />
-          <SetupGuide />
+// ── Sub-components ────────────────────────────────────────────────────────────
+function Tag({col,children}) {
+return <span style={{fontSize:8,fontWeight:700,color:col,background:col+“15”,border:`1px solid ${col}30`,borderRadius:3,padding:“2px 5px”}}>{children}</span>;
+}
+function UBadge({days}) {
+const [col,txt] = days<0.5?[”#ff3b30”,“⚡TODAY”]:days<1?[”#ff6b6b”,`${(days*24).toFixed(0)}h`]:days<2?[”#f5a623”,`~${days.toFixed(1)}d`]:[”#444”,`${days.toFixed(1)}d`];
+return <span style={{fontSize:9,fontWeight:700,color:col,background:col+“15”,borderRadius:4,padding:“2px 6px”,flexShrink:0}}>{txt}</span>;
+}
+function CatBadge({cat}) {
+const colors = {economics:”#f5a623”,politics:”#60a5fa”,crypto:”#a78bfa”,financials:”#34d399”,
+climate:”#4ade80”,tech:”#38bdf8”,weather:”#93c5fd”,companies:”#fb923c”,elections:”#f472b6”,culture:”#e879f9”};
+const c = colors[(cat||””).toLowerCase()] || “#666”;
+return <span style={{fontSize:8,color:c,background:c+“15”,borderRadius:3,padding:“1px 5px”,fontWeight:600}}>{(cat||“other”).toUpperCase()}</span>;
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function DashScreen({pnl,withSig,eligible,autoOn,setAutoOn,emergencyStop,setEStop,stopLossHit,setStopLossHit,log,countdown,fmt$,config,dynExposure,currentBal,winRate,metrics,breakerStatus,breaker,setBreakerStatus}) {
+const total = pnl.realized;
+const gainPct = ((currentBal - config.startBalanceCents) / config.startBalanceCents * 100).toFixed(1);
+const topSigs = withSig.filter(m => m.signal).slice(0, 4);
+
+return (
+<div style={S.page}>
+{/* P&L */}
+<div style={S.pnlCard}>
+<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“flex-start”}}>
+<div>
+<div style={{fontSize:9,color:”#333”,textTransform:“uppercase”,letterSpacing:2,marginBottom:6}}>Session P&L</div>
+<div style={{fontSize:38,fontWeight:900,color:total>=0?”#00ff88”:”#ff6b6b”,lineHeight:1}}>
+{total>=0?”+”:””}{fmt$(Math.abs(total))}
+</div>
+</div>
+<div style={{textAlign:“right”}}>
+<div style={{fontSize:10,color:”#555”}}>Account</div>
+<div style={{fontSize:18,fontWeight:700}}>{fmt$(currentBal)}</div>
+<div style={{fontSize:11,color:total>=0?”#00ff88”:”#ff6b6b”}}>{gainPct>=0?”+”:””}{gainPct}%</div>
+</div>
+</div>
+<div style={{display:“flex”,gap:12,marginTop:6,flexWrap:“wrap”}}>
+{[[“Evaluated”,metrics.evaluated,”#aaa”],[“Placed”,metrics.filled,”#00ff88”],[“Win Rate”,winRate===”–”?”–”:winRate+”%”,”#00ff88”],[“Net”,fmt$(metrics.dollarEarned),metrics.dollarEarned>=0?”#00ff88”:”#ff6b6b”]].map(([l,v,c])=>(
+<span key={l} style={{fontSize:11,color:”#555”}}>{l} <span style={{color:c,fontWeight:700}}>{v}</span></span>
+))}
+</div>
+</div>
+
+```
+  {/* Circuit breaker warning */}
+  {(breakerStatus.errors > 0 || breakerStatus.consecLosses > 2) && (
+    <div style={{background:"#1a0a00",border:"1px solid #f5a62333",borderRadius:10,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <span style={{fontSize:11,color:"#f5a623"}}>⚠ Circuit: {breakerStatus.errors} errors · {breakerStatus.consecLosses} consecutive losses</span>
+      <button style={{fontSize:10,color:"#f5a623",background:"transparent",border:"1px solid #f5a62333",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}
+        onClick={() => { breaker.reset(); setBreakerStatus(breaker.status()); }}>Reset</button>
+    </div>
+  )}
+
+  {/* Auto + Emergency controls */}
+  <div style={{background:"#0a0f14",border:`1px solid ${emergencyStop?"#ff3b3033":"#1a2230"}`,borderRadius:12,padding:"13px 16px"}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
+      <div>
+        <div style={{fontSize:13,fontWeight:700}}>
+          Auto-Trade <span style={{fontSize:10,color:autoOn&&!emergencyStop?"#00ff88":"#444"}}>{autoOn&&!emergencyStop?`● LIVE — ${countdown}s`:"○ OFF"}</span>
         </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Setup Guide Component ────────────────────────────────────────────────────
-function SetupGuide({ expanded = false }) {
-  const [open, setOpen] = useState(expanded);
-  const [copied, setCopied] = useState(false);
-
-  const copy = () => {
-    navigator.clipboard.writeText(WORKER_CODE).then(() => {
-      setCopied(true); setTimeout(() => setCopied(false), 2000);
-    });
-  };
-
-  return (
-    <div style={{ background: "#080c10", border: "1px solid #1a2230", borderRadius: 10, overflow: "hidden" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: "#aaa" }}>🛠 Proxy Setup Guide (2 min, free)</span>
-        <span style={{ fontSize: 12, color: "#555" }}>{open ? "▲" : "▼"}</span>
+        <div style={{fontSize:10,color:"#444",marginTop:2}}>{eligible.length} markets · sorts by soonest expiry · {config.maxTradesPerScan} max/scan</div>
       </div>
-      {open && (
-        <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-          {[
-            ["1", "Go to", "workers.cloudflare.com", "https://workers.cloudflare.com", "and create a free account"],
-            ["2", "Click", "Create Worker", null, "then paste the code below"],
-            ["3", "Click Deploy — copy the", "*.workers.dev URL", null, ""],
-            ["4", "Paste that URL into the Proxy URL field above", "", null, ""],
-          ].map(([n, pre, link, href, post]) => (
-            <div key={n} style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-              <span style={{ fontSize: 11, color: "#00ff88", fontWeight: 800, flexShrink: 0 }}>{n}.</span>
-              <span style={{ fontSize: 11, color: "#555", lineHeight: 1.6 }}>
-                {pre}{" "}
-                {href ? <a href={href} target="_blank" rel="noreferrer" style={{ color: "#00ff88", textDecoration: "none" }}>{link}</a> : <strong style={{ color: "#aaa" }}>{link}</strong>}
-                {" "}{post}
-              </span>
-            </div>
-          ))}
-          <div style={{ position: "relative" }}>
-            <div style={{ background: "#050709", border: "1px solid #111820", borderRadius: 8, padding: "10px 12px", fontSize: 10, color: "#555", fontFamily: "monospace", lineHeight: 1.7, maxHeight: 140, overflowY: "auto", whiteSpace: "pre-wrap" }}>
-              {WORKER_CODE}
-            </div>
-            <button onClick={copy} style={{ position: "absolute", top: 8, right: 8, background: copied ? "#00ff8820" : "#111820", border: `1px solid ${copied ? "#00ff8844" : "#222"}`, color: copied ? "#00ff88" : "#666", borderRadius: 5, padding: "4px 8px", fontSize: 10, cursor: "pointer", fontFamily: "inherit" }}>
-              {copied ? "✓ Copied" : "Copy"}
-            </button>
-          </div>
-          <p style={{ fontSize: 10, color: "#333", margin: 0, lineHeight: 1.6 }}>
-            The Worker just adds CORS headers and forwards requests to Kalshi. Your credentials never leave your browser — the Worker is stateless.
-          </p>
-        </div>
-      )}
+      <div style={{...S.toggle,background:autoOn&&!emergencyStop?"#00ff88":"#111",border:`1px solid ${autoOn&&!emergencyStop?"#00ff88":"#222"}`}}
+        onClick={() => { if (!emergencyStop) setAutoOn(!autoOn); }}>
+        <div style={{...S.thumb,transform:autoOn&&!emergencyStop?"translateX(22px)":"translateX(2px)"}} />
+      </div>
     </div>
-  );
+    <button onClick={() => setEStop(!emergencyStop)} style={{
+      width:"100%",padding:"10px",borderRadius:8,fontWeight:800,fontSize:12,cursor:"pointer",fontFamily:"inherit",
+      background:emergencyStop?"#1a3a1a":"#2a0505",color:emergencyStop?"#00ff88":"#ff3b30",
+      border:`2px solid ${emergencyStop?"#00ff8844":"#ff3b3066"}`,
+    }}>
+      {emergencyStop ? "✓ Trading Halted — Tap to Resume" : "🛑 Emergency Stop — Immediately halt all trading"}
+    </button>
+  </div>
+
+  {/* Stats */}
+  <div style={{display:"flex",gap:8}}>
+    {[[eligible.length,"Markets","#fff"],[withSig.filter(m=>m.signal).length,"Signals","#00ff88"],[fmt$(dynExposure),"Exposure","#f5a623"],[fmt$(config.startBalanceCents*config.stopLossPct),"Stop-loss","#ff6b6b"]].map(([n,l,c])=>(
+      <div key={l} style={{flex:1,background:"#0a0f14",border:"1px solid #1a2230",borderRadius:10,padding:"10px 6px",textAlign:"center"}}>
+        <div style={{fontSize:n.toString().length>5?13:18,fontWeight:900,color:c}}>{n}</div>
+        <div style={{fontSize:7,color:"#333",textTransform:"uppercase",marginTop:2}}>{l}</div>
+      </div>
+    ))}
+  </div>
+
+  {/* Top signals */}
+  {topSigs.length > 0 && <>
+    <div style={S.secH}>🔥 Live Signals — soonest expiry first</div>
+    {topSigs.map(m => (
+      <div key={m.ticker} style={{background:"#0a0f14",borderLeft:`3px solid ${m.signal.color}`,border:"1px solid #1a2230",borderRadius:10,padding:"12px 14px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:6}}>
+          <span style={{fontSize:12,color:"#ccc",flex:1,lineHeight:1.4}}>{m.title}</span>
+          <UBadge days={m.days} />
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <CatBadge cat={m.category} />
+          <span style={{fontSize:10,fontWeight:700,color:m.signal.color,background:m.signal.color+"11",border:`1px solid ${m.signal.color}33`,borderRadius:4,padding:"2px 7px"}}>{m.signal.label}</span>
+          <span style={{fontSize:9,color:"#444"}}>{m.signal.why}</span>
+        </div>
+      </div>
+    ))}
+  </>}
+
+  {/* Log */}
+  <div style={S.secH}>Activity Log</div>
+  <div style={{background:"#050709",border:"1px solid #0f1520",borderRadius:10,padding:"10px 12px",maxHeight:200,overflowY:"auto"}}>
+    {log.length===0 && <div style={{color:"#222",fontSize:12,textAlign:"center",padding:16}}>No activity yet</div>}
+    {log.slice(0,60).map((l,i) => (
+      <div key={i} style={{fontSize:10,lineHeight:1.9,fontFamily:"monospace",color:{error:"#ff6b6b",success:"#00ff88",warn:"#f5a623",trade:"#88aaff"}[l.type]||"#444"}}>
+        <span style={{color:"#222",marginRight:6}}>{l.ts}</span>{l.msg}
+      </div>
+    ))}
+  </div>
+</div>
+```
+
+);
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
-const S = {
-  wrap:    { minHeight:"100vh", background:"#06080b", display:"flex", alignItems:"center", justifyContent:"center", padding:16, fontFamily:"'JetBrains Mono','Courier New',monospace" },
-  card:    { width:"100%", maxWidth:400, background:"#0a0f14", border:"1px solid #1a2230", borderRadius:18, padding:24, display:"flex", flexDirection:"column", gap:14 },
-  logoRow: { display:"flex", alignItems:"center", gap:12 },
-  logoK:   { fontSize:46, fontWeight:900, color:"#00ff88", fontFamily:"Georgia,serif", lineHeight:1 },
-  logoTitle:{ fontSize:22, fontWeight:800, color:"#fff" },
-  badge:   col => ({ fontSize:10, fontWeight:700, background:col+"15", color:col, borderRadius:4, padding:"1px 7px", verticalAlign:"middle", marginLeft:4 }),
-  logoSub: { fontSize:11, color:"#333", marginTop:3 },
-  evalBox: { background:"#050709", border:"1px solid #1a2230", borderRadius:10, padding:"12px 14px" },
-  evalTitle:{ fontSize:11, fontWeight:700, color:"#aaa", marginBottom:10, textTransform:"uppercase", letterSpacing:1 },
-  field:   { display:"flex", flexDirection:"column", gap:5 },
-  lbl:     { fontSize:10, color:"#444", textTransform:"uppercase", letterSpacing:1 },
-  inp:     { background:"#0e141b", border:"1px solid #1a2230", borderRadius:8, padding:"10px 14px", color:"#fff", fontSize:14, fontFamily:"inherit", outline:"none" },
-  errBox:  { background:"#1a0505", border:"1px solid #ff6b6b33", borderRadius:8, padding:"10px 14px", color:"#ff6b6b", fontSize:12 },
-  btnG:    { background:"#00ff88", color:"#001409", fontWeight:800, border:"none", borderRadius:10, padding:"13px 20px", fontSize:14, cursor:"pointer", fontFamily:"inherit" },
-  btnGhost:{ background:"transparent", color:"#444", border:"1px solid #1a2230", borderRadius:10, padding:"11px 20px", fontSize:13, cursor:"pointer", fontFamily:"inherit" },
-  btnPurple:{ background:"#c084fc15", border:"1px solid #c084fc33", color:"#c084fc", borderRadius:7, padding:"7px 10px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" },
-  btnTrade:{ background:"#00ff8812", border:"1px solid #00ff8830", color:"#00ff88", borderRadius:7, padding:"7px 12px", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit" },
-  fine:    { color:"#2a2a2a", fontSize:10, textAlign:"center", margin:0, lineHeight:1.5 },
-  shell:   { display:"flex", flexDirection:"column", height:"100vh", background:"#06080b", fontFamily:"'JetBrains Mono','Courier New',monospace", color:"#fff", maxWidth:480, margin:"0 auto" },
-  hdr:     { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", background:"#0a0f14", borderBottom:"1px solid #141c26", flexShrink:0 },
-  nav:     { display:"flex", background:"#0a0f14", borderTop:"1px solid #141c26", flexShrink:0 },
-  navBtn:  { flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:2, padding:"9px 0 7px", background:"none", border:"none", color:"#2a2a2a", cursor:"pointer", fontFamily:"inherit" },
-  page:    { padding:"14px 14px 24px", display:"flex", flexDirection:"column", gap:12 },
-  secH:    { fontSize:9, color:"#2a2a2a", textTransform:"uppercase", letterSpacing:2, marginTop:4 },
-  empty:   { color:"#2a2a2a", textAlign:"center", padding:"32px 20px", fontSize:13, lineHeight:1.8 },
-  pnlCard: { background:"linear-gradient(135deg,#0a0f14,#0f1620)", border:"1px solid #1a2230", borderRadius:14, padding:"18px 20px" },
-  toggle:  { width:50, height:26, borderRadius:13, cursor:"pointer", position:"relative", transition:"all 0.3s", flexShrink:0 },
-  thumb:   { position:"absolute", top:3, width:20, height:20, borderRadius:"50%", background:"#fff", transition:"transform 0.3s" },
+// ── Markets ───────────────────────────────────────────────────────────────────
+function MarketsScreen({markets,fmt$,addLog,demo,paper,config,weatherCache,fetchWeather,tradedRef,setPnl,setBalance,updMetrics,metrics}) {
+const [filter,setFilter] = useState(“all”);
+const [search,setSearch] = useState(””);
+const [catFilter,setCatFilter] = useState(“all”);
+
+const cats = [“all”,“economics”,“politics”,“crypto”,“financials”,“climate”,“tech”,“weather”,“companies”,“elections”,“culture”];
+const shown = markets
+.filter(m => filter===“signals” ? m.signal : true)
+.filter(m => catFilter===“all” || (m.category||””).toLowerCase()===catFilter)
+.filter(m => !search || m.title.toLowerCase().includes(search.toLowerCase()));
+
+const simulate = demo || paper;
+
+const doTrade = async (m) => {
+if (!m.signal) return;
+if (simulate && tradedRef.current.has(m.ticker)) { addLog(`Already in position: ${m.ticker}`, “warn”); return; }
+const price = m.signal.side===“no” ? m.no_bid : m.yes_bid;
+const cost  = kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days);
+addLog(`Manual [${m.signal.signal}]: ${m.ticker} | $${(cost/100).toFixed(2)} | ${m.signal.label}`, “trade”);
+if (simulate) {
+const sim = simulateTrade(m.signal, price, cost);
+if (!sim.filled) { addLog(`⟳ Not filled`, “info”); return; }
+tradedRef.current.add(m.ticker);
+setBalance(b => (b??10000)+sim.net);
+setPnl(p => ({ …p, realized: p.realized + sim.net }));
+const sig = m.signal.signal;
+updMetrics({ filled:metrics.filled+1, wins:metrics.wins+(sim.won?1:0), losses:metrics.losses+(sim.won?0:1), dollarPlaced:metrics.dollarPlaced+cost, dollarEarned:metrics.dollarEarned+sim.net,
+bySignal:{[sig]:{filled:(metrics.bySignal[sig]?.filled||0)+1,wins:(metrics.bySignal[sig]?.wins||0)+(sim.won?1:0),losses:(metrics.bySignal[sig]?.losses||0)+(sim.won?0:1),placed:(metrics.bySignal[sig]?.placed||0)+cost,earned:(metrics.bySignal[sig]?.earned||0)+sim.net}} });
+addLog(`${sim.won?"✓ WIN":"✗ LOSS"}: ${sim.net>=0?"+":""}${fmt$(sim.net)} | p=${(sim.trueWinProb*100).toFixed(0)}%`, sim.won?“success”:“error”);
+} else {
+try { await placeOrder(m.ticker, m.signal.side, Math.max(1,Math.round(cost/10)), price); addLog(“✓ Order placed”,“success”); }
+catch(e) { addLog(`✗ ${e.message}`,“error”); }
+}
 };
-    ReactDOM.createRoot(document.getElementById('root')).render(
-      React.createElement(KalshiTrader, null)
+
+return (
+<div style={S.page}>
+<input style={{…S.inp,marginBottom:0}} placeholder=“Search markets…” value={search} onChange={e=>setSearch(e.target.value)} />
+<div style={{display:“flex”,gap:6,overflowX:“auto”,paddingBottom:4}}>
+{[“signals”,“all”].map(f=>(
+<button key={f} style={{flexShrink:0,padding:“6px 12px”,background:filter===f?”#00ff8810”:”#0a0f14”,border:`1px solid ${filter===f?"#00ff8830":"#1a2230"}`,borderRadius:7,color:filter===f?”#00ff88”:”#444”,fontSize:11,cursor:“pointer”,fontFamily:“inherit”}} onClick={()=>setFilter(f)}>
+{f===“signals”?“🔥 Signals”:“All”}
+</button>
+))}
+</div>
+<div style={{display:“flex”,gap:4,overflowX:“auto”,paddingBottom:4}}>
+{cats.map(c=>(
+<button key={c} style={{flexShrink:0,padding:“4px 8px”,background:catFilter===c?”#f5a62312”:”#0a0f14”,border:`1px solid ${catFilter===c?"#f5a62330":"#1a2230"}`,borderRadius:5,color:catFilter===c?”#f5a623”:”#444”,fontSize:9,cursor:“pointer”,fontFamily:“inherit”,textTransform:“uppercase”}} onClick={()=>setCatFilter(c)}>
+{c}
+</button>
+))}
+</div>
+<div style={{fontSize:11,color:”#444”}}>{shown.length} markets shown{isSportsMarket?””:” (sports blocked)”}</div>
+{shown.length===0 && <div style={S.empty}>No markets match your filters.</div>}
+{shown.map(m => {
+const blocked = isSportsMarket(m);
+const price = m.signal?.side===“no” ? m.no_bid : m.yes_bid;
+const cost  = m.signal ? kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days) : 0;
+const wc = weatherCache[m.ticker];
+const isW = (m.category||””).toLowerCase()===“weather”;
+return (
+<div key={m.ticker} style={{background:blocked?”#0a0808”:”#0a0f14”,border:“1px solid #1a2230”,borderLeft:`3px solid ${blocked?"#ff3b30":m.signal?m.signal.color:"#1a2230"}`,borderRadius:12,padding:13,display:“flex”,flexDirection:“column”,gap:8,opacity:blocked?0.4:1}}>
+<div style={{display:“flex”,justifyContent:“space-between”,gap:8}}>
+<div style={{fontSize:12,fontWeight:600,color:blocked?”#555”:”#ddd”,flex:1,lineHeight:1.4}}>{m.title}</div>
+<div style={{display:“flex”,gap:4,alignItems:“flex-start”,flexShrink:0}}>
+{blocked && <span style={{fontSize:9,fontWeight:700,color:”#ff3b30”,background:”#ff3b3015”,border:“1px solid #ff3b3030”,borderRadius:4,padding:“2px 5px”}}>⛔</span>}
+<UBadge days={m.days} />
+</div>
+</div>
+<div style={{display:“flex”,alignItems:“center”,gap:6,flexWrap:“wrap”}}>
+<CatBadge cat={m.category} />
+{[[“YES”,`${m.yes_bid}¢`],[“NO”,`${m.no_bid}¢`],[“VOL”,m.volume?(m.volume/1000).toFixed(0)+“k”:”–”]].map(([k,v])=>(
+<span key={k} style={{fontSize:10,color:”#555”}}>{k}: <span style={{color:”#aaa”,fontWeight:700}}>{v}</span></span>
+))}
+</div>
+{!blocked && m.signal && (
+<div style={{display:“flex”,alignItems:“center”,justifyContent:“space-between”,flexWrap:“wrap”,gap:8}}>
+<div>
+<span style={{fontSize:10,fontWeight:700,color:m.signal.color,background:m.signal.color+“11”,border:`1px solid ${m.signal.color}33`,borderRadius:5,padding:“2px 8px”}}>{m.signal.label}</span>
+<div style={{fontSize:9,color:”#444”,marginTop:3}}>{m.signal.why} · Bet: {fmt$(cost)}</div>
+</div>
+<div style={{display:“flex”,gap:6}}>
+{isW && !wc?.loading && !wc?.data && <button style={S.btnWeather} onClick={()=>fetchWeather(m.ticker,m.title)}>🌤 Weather</button>}
+{isW && wc?.loading && <span style={{fontSize:10,color:”#38bdf8”}}>Analyzing…</span>}
+<button style={S.btnTrade} onClick={()=>doTrade(m)}>Trade →</button>
+</div>
+</div>
+)}
+{!blocked && !m.signal && isW && !wc?.data && (
+<button style={S.btnWeather} onClick={()=>fetchWeather(m.ticker,m.title)}>🌤 Analyze weather data</button>
+)}
+{wc?.data && (
+<div style={{background:”#06101a”,border:“1px solid #38bdf822”,borderRadius:8,padding:“8px 12px”,fontSize:11,color:”#93c5fd”,lineHeight:1.5}}>
+🌤 {wc.data.reasoning} (adj {wc.data.adjustment>=0?”+”:””}{wc.data.adjustment}¢, {wc.data.confidence}% conf · {wc.data.source})
+</div>
+)}
+</div>
+);
+})}
+</div>
+);
+}
+
+// ── Metrics ───────────────────────────────────────────────────────────────────
+function MetricsScreen({metrics,winRate,fmt$,pnl,config,resetMetrics}) {
+const roi = config.startBalanceCents > 0 ? ((metrics.dollarEarned/config.startBalanceCents)*100).toFixed(1) : “0.0”;
+const fillRate = metrics.attempted > 0 ? ((metrics.filled/metrics.attempted)*100).toFixed(0) : “–”;
+const avgWin  = metrics.wins   > 0 ? metrics.dollarEarned / metrics.wins   / 100 : 0;
+const avgLoss = metrics.losses > 0 ? Math.abs(metrics.dollarPlaced - (metrics.dollarEarned + metrics.dollarPlaced)) / metrics.losses / 100 : 0;
+
+return (
+<div style={S.page}>
+<div style={{background:”#0a0f14”,border:“1px solid #1a2230”,borderRadius:12,padding:14}}>
+<div style={{fontSize:13,fontWeight:700,marginBottom:12}}>Performance Overview</div>
+<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:10}}>
+{[
+[“Markets Evaluated”,  metrics.evaluated,      “#aaa”],
+[“Signals Generated”,  metrics.signalsFound,   “#00ff88”],
+[“Orders Attempted”,   metrics.attempted,      “#fff”],
+[“Orders Filled”,      metrics.filled,         “#00ff88”],
+[“Fill Rate”,          fillRate===”–”?”–”:fillRate+”%”, “#f5a623”],
+[“Wins”,               metrics.wins,           “#00ff88”],
+[“Losses”,             metrics.losses,         “#ff6b6b”],
+[“Win Rate”,           winRate===”–”?”–”:winRate+”%”,   metrics.wins>metrics.losses?”#00ff88”:”#ff6b6b”],
+[“Total $ Placed”,     fmt$(metrics.dollarPlaced), “#fff”],
+[“Total $ Earned”,     (metrics.dollarEarned>=0?”+”:””)+fmt$(Math.abs(metrics.dollarEarned)), metrics.dollarEarned>=0?”#00ff88”:”#ff6b6b”],
+[“ROI”,                (parseFloat(roi)>=0?”+”:””)+roi+”%”, parseFloat(roi)>=0?”#00ff88”:”#ff6b6b”],
+[“Avg Win”,            avgWin>0?”+$”+avgWin.toFixed(2):”–”, “#00ff88”],
+].map(([l,v,c]) => (
+<div key={l} style={{background:”#080c10”,borderRadius:8,padding:“10px 12px”}}>
+<div style={{fontSize:9,color:”#333”,textTransform:“uppercase”,letterSpacing:1,marginBottom:4}}>{l}</div>
+<div style={{fontSize:18,fontWeight:900,color:c}}>{v}</div>
+</div>
+))}
+</div>
+</div>
+
+```
+  <div style={{fontSize:11,fontWeight:700,color:"#aaa",marginTop:4}}>By Strategy</div>
+  {Object.entries(metrics.bySignal).map(([sig,s]) => {
+    if (!s.attempted) return null;
+    const wr = (s.wins+s.losses)>0 ? ((s.wins/(s.wins+s.losses))*100).toFixed(0)+"%" : "–";
+    const cols = {ARB:"#00ff88",VOL:"#00ff88",FADE:"#ff6b6b",WTHR:"#38bdf8"};
+    const labels = {ARB:"Arbitrage",VOL:"Volume Edge",FADE:"Fade Extremes",WTHR:"Weather"};
+    return (
+      <div key={sig} style={{background:"#0a0f14",border:"1px solid #1a2230",borderLeft:`3px solid ${cols[sig]||"#555"}`,borderRadius:10,padding:12}}>
+        <div style={{fontSize:12,fontWeight:700,color:cols[sig],marginBottom:8}}>{labels[sig]||sig}</div>
+        <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
+          {[["Attempted",s.attempted,"#aaa"],["Filled",s.filled,"#fff"],["Wins",s.wins,"#00ff88"],["Losses",s.losses,"#ff6b6b"],["Win %",wr,cols[sig]],["$ Placed",fmt$(s.placed),"#fff"],["$ Earned",(s.earned>=0?"+":"")+fmt$(Math.abs(s.earned)),s.earned>=0?"#00ff88":"#ff6b6b"]].map(([l,v,c])=>(
+            <div key={l}><span style={{fontSize:9,color:"#444"}}>{l} </span><span style={{fontSize:12,fontWeight:700,color:c}}>{v}</span></div>
+          ))}
+        </div>
+      </div>
     );
-  </script>
+  })}
+
+  <button style={{...S.btnGhost,color:"#ff6b6b",borderColor:"#ff6b6b22",marginTop:4}} onClick={resetMetrics}>
+    Reset All Metrics
+  </button>
+</div>
+```
+
+);
+}
+
+// ── Weather Hub ───────────────────────────────────────────────────────────────
+function WeatherScreen({markets,weatherCache,fetchWeather,config}) {
+const weatherMkts = markets.filter(m => {
+const t = (m.title||””).toLowerCase();
+const c = (m.category||””).toLowerCase();
+return c===“weather” || t.includes(“weather”) || t.includes(“snow”) || t.includes(“rain”) || t.includes(“hurricane”) || t.includes(“temperature”) || t.includes(“storm”) || t.includes(“flood”) || t.includes(“drought”);
+});
+const loaded  = weatherMkts.filter(m => weatherCache[m.ticker]?.data);
+const pending = weatherMkts.filter(m => !weatherCache[m.ticker]);
+
+return (
+<div style={S.page}>
+<div style={{background:“linear-gradient(135deg,#06101a,#0a1828)”,border:“1px solid #38bdf822”,borderRadius:14,padding:“16px 18px”}}>
+<div style={{fontSize:15,fontWeight:800,color:”#38bdf8”,marginBottom:6}}>🌤 Weather Market Analysis</div>
+<div style={{fontSize:12,color:”#555”,lineHeight:1.6}}>
+Claude searches NOAA, NWS, AccuWeather, and Weather.com to match weather predictions with Kalshi markets. Results adjust the trading edge by up to ±15¢. Markets sorted by soonest expiry.
+</div>
+</div>
+
+```
+  {weatherMkts.length === 0 && <div style={S.empty}>No weather markets found in the {config.daysWindow}-day window.</div>}
+
+  {pending.length > 0 && (
+    <button style={S.btnG} onClick={() => pending.slice(0,5).forEach(m => fetchWeather(m.ticker, m.title))}>
+      🌤 Analyze Top {Math.min(5,pending.length)} Weather Markets
+    </button>
+  )}
+
+  {weatherMkts.some(m => weatherCache[m.ticker]?.loading) && (
+    <div style={{background:"#06101a",border:"1px solid #38bdf822",borderRadius:8,padding:"11px 14px",fontSize:12,color:"#38bdf8"}}>
+      ⟳ Fetching weather data…
+    </div>
+  )}
+
+  {weatherMkts.map(m => {
+    const wc = weatherCache[m.ticker];
+    return (
+      <div key={m.ticker} style={{background:"#0a0f14",border:"1px solid #1a2230",borderLeft:`3px solid #38bdf8`,borderRadius:12,padding:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:8}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#ddd",flex:1,lineHeight:1.4}}>{m.title}</div>
+          <UBadge days={m.days} />
+        </div>
+        <div style={{display:"flex",gap:10,marginBottom:8}}>
+          <span style={{fontSize:10,color:"#555"}}>YES: <strong style={{color:"#aaa"}}>{m.yes_bid}¢</strong></span>
+          <span style={{fontSize:10,color:"#555"}}>NO: <strong style={{color:"#aaa"}}>{m.no_bid}¢</strong></span>
+        </div>
+        {!wc && <button style={S.btnWeather} onClick={() => fetchWeather(m.ticker, m.title)}>🌤 Fetch weather analysis</button>}
+        {wc?.loading && <div style={{fontSize:11,color:"#38bdf8"}}>Searching weather data…</div>}
+        {wc?.data && (
+          <div style={{background:"#06101a",border:"1px solid #38bdf822",borderRadius:8,padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
+            <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+              <span style={{fontWeight:800,fontSize:12,color:{bullish:"#00ff88",bearish:"#ff6b6b",neutral:"#888"}[wc.data.overall]||"#888"}}>{wc.data.overall?.toUpperCase()}</span>
+              <span style={{fontSize:11,color:"#555"}}>Conf: {wc.data.confidence}%</span>
+              <span style={{fontSize:11,fontWeight:700,color:wc.data.adjustment>=0?"#00ff88":"#ff6b6b"}}>Adj: {wc.data.adjustment>=0?"+":""}{wc.data.adjustment}¢</span>
+              <span style={{fontSize:10,color:"#38bdf8"}}>via {wc.data.source}</span>
+              <span style={{fontSize:10,color:"#555"}}>Rec: <strong style={{color:wc.data.recommended_side==="yes"?"#00ff88":wc.data.recommended_side==="no"?"#ff6b6b":"#888"}}>{wc.data.recommended_side?.toUpperCase()}</strong></span>
+            </div>
+            <p style={{fontSize:11,color:"#777",margin:0,lineHeight:1.5}}>{wc.data.reasoning}</p>
+          </div>
+        )}
+      </div>
+    );
+  })}
+</div>
+```
+
+);
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+function SettingsScreen({config,setConfig,fmt$,paper,demo,onLogout}) {
+const set = (k,v) => setConfig(c => ({ …c, [k]:v }));
+return (
+<div style={S.page}>
+<div style={{background:”#0a0f14”,border:“1px solid #1a2230”,borderRadius:12,overflow:“hidden”}}>
+{[
+{l:“Max bet per trade”, k:“maxBetCents”,       mn:100, mx:2000, st:100, d:v=>fmt$(v)},
+{l:“Kelly fraction”,   k:“kellyFraction”,      mn:10,  mx:50,   st:5,   d:v=>`${v}%`, f:100},
+{l:“Min edge”,         k:“minEdge”,            mn:1,   mx:10,   st:1,   d:v=>`${v}%`, f:100},
+{l:“Days window”,      k:“daysWindow”,         mn:3,   mx:30,   st:1,   d:v=>`${v}d`},
+{l:“Scan interval”,    k:“scanIntervalSec”,    mn:15,  mx:300,  st:15,  d:v=>`${v}s`},
+{l:“Min volume ($)”,   k:“minVolume”,          mn:1000,mx:50000,st:1000,d:v=>`$${(v/100).toFixed(0)}`},
+{l:“Stop-loss %”,      k:“stopLossPct”,        mn:10,  mx:40,   st:5,   d:v=>`${v}%`, f:100},
+{l:“Circuit errors”,   k:“circuitMaxErrors”,   mn:2,   mx:20,   st:1,   d:v=>`${v}`},
+{l:“Circuit losses”,   k:“circuitMaxLosses”,   mn:2,   mx:20,   st:1,   d:v=>`${v}`},
+].map(({l,k,mn,mx,st,d,f})=>{
+const raw = f ? Math.round(config[k]*f) : config[k];
+return (
+<div key={k} style={{padding:“12px 14px”,borderBottom:“1px solid #0f1520”}}>
+<div style={{display:“flex”,justifyContent:“space-between”,marginBottom:5}}>
+<span style={{fontSize:12,color:”#666”}}>{l}</span>
+<span style={{fontSize:12,color:”#00ff88”,fontWeight:700}}>{d(raw)}</span>
+</div>
+<input type=“range” min={mn} max={mx} step={st} value={raw} style={{width:“100%”,accentColor:”#00ff88”}}
+onChange={e=>set(k, f ? Number(e.target.value)/f : Number(e.target.value))} />
+</div>
+);
+})}
+</div>
+
+```
+  <div style={{background:"#0a0f14",border:"1px solid #1a2230",borderRadius:12,overflow:"hidden"}}>
+    {[["Fade extremes (>92% / <8%)","fadeExtremes"],["Volume momentum edge","volumeEdge"]].map(([l,k])=>(
+      <div key={k} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 14px",borderBottom:"1px solid #0f1520"}}>
+        <span style={{fontSize:12,color:"#666",flex:1,marginRight:12}}>{l}</span>
+        <div style={{...S.toggle,width:44,height:24,background:config[k]?"#00ff88":"#111",border:`1px solid ${config[k]?"#00ff88":"#222"}`}} onClick={()=>set(k,!config[k])}>
+          <div style={{...S.thumb,transform:config[k]?"translateX(20px)":"translateX(2px)"}} />
+        </div>
+      </div>
+    ))}
+  </div>
+
+  <div style={{background:"#0a0f14",border:"1px solid #1a2230",borderRadius:12,padding:14}}>
+    <div style={{fontSize:11,fontWeight:700,color:"#aaa",marginBottom:10}}>Exposure Scaling</div>
+    {[0,1,2,3,4].map(i=>{
+      const bal = config.startBalanceCents + i*10000;
+      const exp = 5000 + i*5000;
+      return (
+        <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #0f1520"}}>
+          <span style={{fontSize:11,color:"#555"}}>Account {fmt$(bal)}</span>
+          <span style={{fontSize:11,fontWeight:700,color:"#00ff88"}}>→ {fmt$(exp)} exposure</span>
+        </div>
+      );
+    })}
+  </div>
+
+  <div style={{background:"#0a0f14",border:"1px solid #1a2230",borderRadius:12,padding:14}}>
+    <div style={{fontSize:11,fontWeight:700,color:"#aaa",marginBottom:10}}>Strategy Guide</div>
+    {[
+      ["ARB","#00ff88","YES+NO < 93¢ = guaranteed profit regardless of outcome"],
+      ["VOL","#00ff88","High volume + tight spread + clear direction = smart money confirmation"],
+      ["FADE","#ff6b6b","Markets >92% or <8% overweight recency bias — fade the extreme"],
+      ["WTHR","#38bdf8","Weather data from NOAA/NWS adjusts edge on weather markets"],
+      ["Circuit","#f5a623","Auto-halts if 5+ API errors or 6+ consecutive losses in a session"],
+      ["Kelly","#88aaff","25% fractional Kelly compounds gains while limiting drawdown"],
+    ].map(([t,c,d])=>(
+      <p key={t} style={{fontSize:11,color:"#555",margin:"0 0 10px",lineHeight:1.65}}>
+        <strong style={{color:c}}>[{t}]</strong> {d}
+      </p>
+    ))}
+  </div>
+
+  <button style={{background:"transparent",color:"#ff6b6b",border:"1px solid #ff6b6b22",borderRadius:10,padding:"12px 20px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}} onClick={onLogout}>
+    Disconnect
+  </button>
+</div>
+```
+
+);
+}
+
+// ── Proxy Field ───────────────────────────────────────────────────────────────
+function ProxyField({proxyUrl,setProxyUrl}) {
+const [open,setOpen] = useState(!!proxyUrl);
+return (
+<div style={{border:“1px solid #1a2230”,borderRadius:10,overflow:“hidden”}}>
+<div style={{display:“flex”,alignItems:“center”,justifyContent:“space-between”,padding:“10px 14px”,cursor:“pointer”,background:”#0a0f14”}} onClick={()=>setOpen(o=>!o)}>
+<span style={{fontSize:11,color:”#555”}}>{proxyUrl?<span style={{color:”#00ff88”}}>✓ Proxy configured</span>:“⚙️ CORS proxy (only needed if Connect fails)”}</span>
+<span style={{fontSize:11,color:”#444”}}>{open?“▲”:“▼”}</span>
+</div>
+{open && (
+<div style={{padding:“0 14px 14px”,background:”#0a0f14”,display:“flex”,flexDirection:“column”,gap:8}}>
+<p style={{fontSize:11,color:”#555”,margin:0,lineHeight:1.6}}>If Connect fails, deploy the free Cloudflare Worker and paste its .workers.dev URL here.</p>
+<input style={{background:”#0e141b”,border:“1px solid #1a2230”,borderRadius:8,padding:“9px 12px”,color:”#fff”,fontSize:13,fontFamily:“inherit”,outline:“none”}}
+type=“url” placeholder=“https://your-worker.workers.dev” value={proxyUrl} onChange={e=>setProxyUrl(e.target.value)} />
+<SetupGuide />
+</div>
+)}
+</div>
+);
+}
+
+// ── Setup Guide ───────────────────────────────────────────────────────────────
+function SetupGuide({expanded=false}) {
+const [open,setOpen] = useState(expanded);
+const [copied,setCopied] = useState(false);
+const copy = () => { navigator.clipboard.writeText(WORKER_CODE).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);}); };
+return (
+<div style={{background:”#080c10”,border:“1px solid #1a2230”,borderRadius:10,overflow:“hidden”}}>
+<div style={{display:“flex”,alignItems:“center”,justifyContent:“space-between”,padding:“12px 14px”,cursor:“pointer”}} onClick={()=>setOpen(o=>!o)}>
+<span style={{fontSize:12,fontWeight:700,color:”#aaa”}}>🛠 Proxy Setup (2 min, free)</span>
+<span style={{fontSize:12,color:”#555”}}>{open?“▲”:“▼”}</span>
+</div>
+{open && (
+<div style={{padding:“0 14px 14px”,display:“flex”,flexDirection:“column”,gap:8}}>
+{[[“1”,“Go to”,“workers.cloudflare.com”,“https://workers.cloudflare.com”,“→ free account”],[“2”,“Click”,“Create Worker”,””,”, paste code below”],[“3”,“Click Deploy, copy the”,”*.workers.dev URL”,””,””],[“4”,“Paste that URL in the Proxy field above”,””,””,””]].map(([n,pre,link,href,post])=>(
+<div key={n} style={{display:“flex”,gap:8}}>
+<span style={{color:”#00ff88”,fontWeight:800,fontSize:11,flexShrink:0}}>{n}.</span>
+<span style={{fontSize:11,color:”#555”,lineHeight:1.6}}>{pre} {href?<a href={href} target=”_blank” rel=“noreferrer” style={{color:”#00ff88”,textDecoration:“none”}}>{link}</a>:<strong style={{color:”#aaa”}}>{link}</strong>} {post}</span>
+</div>
+))}
+<div style={{position:“relative”}}>
+<div style={{background:”#050709”,border:“1px solid #111820”,borderRadius:8,padding:“10px 12px”,fontSize:9,color:”#555”,fontFamily:“monospace”,lineHeight:1.7,maxHeight:120,overflowY:“auto”,whiteSpace:“pre-wrap”}}>{WORKER_CODE}</div>
+<button onClick={copy} style={{position:“absolute”,top:8,right:8,background:copied?”#00ff8820”:”#111820”,border:`1px solid ${copied?"#00ff8844":"#222"}`,color:copied?”#00ff88”:”#666”,borderRadius:5,padding:“4px 8px”,fontSize:10,cursor:“pointer”,fontFamily:“inherit”}}>{copied?“✓ Copied”:“Copy”}</button>
+</div>
+</div>
+)}
+</div>
+);
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const S = {
+wrap:     { minHeight:“100vh”, background:”#06080b”, display:“flex”, alignItems:“center”, justifyContent:“center”, padding:16, fontFamily:”‘JetBrains Mono’,‘Courier New’,monospace” },
+card:     { width:“100%”, maxWidth:420, background:”#0a0f14”, border:“1px solid #1a2230”, borderRadius:18, padding:24, display:“flex”, flexDirection:“column”, gap:14 },
+logoRow:  { display:“flex”, alignItems:“center”, gap:12 },
+logoK:    { fontSize:46, fontWeight:900, color:”#00ff88”, fontFamily:“Georgia,serif”, lineHeight:1 },
+logoTitle:{ fontSize:22, fontWeight:800, color:”#fff” },
+badge:    col => ({ fontSize:10, fontWeight:700, background:col+“15”, color:col, borderRadius:4, padding:“1px 7px”, verticalAlign:“middle”, marginLeft:4 }),
+logoSub:  { fontSize:10, color:”#333”, marginTop:3 },
+field:    { display:“flex”, flexDirection:“column”, gap:5 },
+lbl:      { fontSize:10, color:”#444”, textTransform:“uppercase”, letterSpacing:1 },
+inp:      { background:”#0e141b”, border:“1px solid #1a2230”, borderRadius:8, padding:“10px 14px”, color:”#fff”, fontSize:14, fontFamily:“inherit”, outline:“none” },
+errBox:   { background:”#1a0505”, border:“1px solid #ff6b6b33”, borderRadius:8, padding:“10px 14px”, color:”#ff6b6b”, fontSize:12 },
+btnG:     { background:”#00ff88”, color:”#001409”, fontWeight:800, border:“none”, borderRadius:10, padding:“13px 20px”, fontSize:14, cursor:“pointer”, fontFamily:“inherit” },
+btnGhost: { background:“transparent”, color:”#444”, border:“1px solid #1a2230”, borderRadius:10, padding:“11px 20px”, fontSize:13, cursor:“pointer”, fontFamily:“inherit” },
+btnTrade: { background:”#00ff8812”, border:“1px solid #00ff8830”, color:”#00ff88”, borderRadius:7, padding:“7px 12px”, fontSize:11, fontWeight:700, cursor:“pointer”, fontFamily:“inherit” },
+btnWeather:{ background:”#38bdf812”, border:“1px solid #38bdf830”, color:”#38bdf8”, borderRadius:7, padding:“7px 10px”, fontSize:11, fontWeight:700, cursor:“pointer”, fontFamily:“inherit” },
+fine:     { color:”#2a2a2a”, fontSize:10, textAlign:“center”, margin:0, lineHeight:1.5 },
+shell:    { display:“flex”, flexDirection:“column”, height:“100vh”, background:”#06080b”, fontFamily:”‘JetBrains Mono’,‘Courier New’,monospace”, color:”#fff”, maxWidth:480, margin:“0 auto” },
+hdr:      { display:“flex”, alignItems:“center”, justifyContent:“space-between”, padding:“10px 14px”, background:”#0a0f14”, borderBottom:“1px solid #141c26”, flexShrink:0 },
+nav:      { display:“flex”, background:”#0a0f14”, borderTop:“1px solid #141c26”, flexShrink:0 },
+navBtn:   { flex:1, display:“flex”, flexDirection:“column”, alignItems:“center”, gap:2, padding:“9px 0 7px”, background:“none”, border:“none”, color:”#2a2a2a”, cursor:“pointer”, fontFamily:“inherit” },
+page:     { padding:“14px 14px 24px”, display:“flex”, flexDirection:“column”, gap:12 },
+secH:     { fontSize:9, color:”#2a2a2a”, textTransform:“uppercase”, letterSpacing:2, marginTop:4 },
+empty:    { color:”#2a2a2a”, textAlign:“center”, padding:“32px 20px”, fontSize:13, lineHeight:1.8 },
+pnlCard:  { background:“linear-gradient(135deg,#0a0f14,#0f1620)”, border:“1px solid #1a2230”, borderRadius:14, padding:“18px 20px” },
+toggle:   { width:50, height:26, borderRadius:13, cursor:“pointer”, position:“relative”, transition:“all 0.3s”, flexShrink:0 },
+thumb:    { position:“absolute”, top:3, width:20, height:20, borderRadius:“50%”, background:”#fff”, transition:“transform 0.3s” },
+};
+ReactDOM.createRoot(document.getElementById(‘root’)).render(
+React.createElement(KalshiTrader, null)
+);
+</script>
+
 </body>
 </html>
