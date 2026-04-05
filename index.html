@@ -7,7 +7,6 @@
   <title>Kalshi Auto Trader</title>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone@7.23.3/babel.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body, #root { height: 100%; }
@@ -20,29 +19,66 @@
 </head>
 <body>
   <div id="root"></div>
-  <script type="text/babel">
-    const { useState, useEffect, useCallback, useRef } = React;
-
+  <script>
+    // Error boundary — shows message instead of blank page if React crashes
+    window.onerror = function(msg, src, line, col, err) {
+      document.getElementById('root').innerHTML =
+        '<div style="color:#ff6b6b;padding:24px;font-family:monospace;font-size:13px;background:#06080b;min-height:100vh">' +
+        '<div style="font-size:18px;margin-bottom:12px">⚠ App Error</div>' +
+        '<div style="color:#888;margin-bottom:8px">' + (msg||'Unknown error') + '</div>' +
+        '<div style="color:#444;font-size:11px">' + (src||'') + ' line ' + (line||'?') + '</div>' +
+        '</div>';
+    };
 // ─── Cloudflare Worker code ───────────────────────────────────────────────────
-const WORKER_CODE = `const KALSHI = "https://api.elections.kalshi.com/trade-api/v2"; const CORS = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS", "Access-Control-Allow-Headers": "Content-Type, KALSHI-ACCESS-KEY, KALSHI-ACCESS-SIGNATURE, KALSHI-ACCESS-TIMESTAMP", }; export default { async fetch(req) { if (req.method === "OPTIONS") return new Response(null, { headers: CORS }); const url = new URL(req.url); const target = KALSHI + url.pathname + url.search; const headers = {}; for (const [k, v] of req.headers) { if (!["host","origin","referer"].includes(k)) headers[k] = v; } const res = await fetch(target, { method: req.method, headers, body: req.method !== "GET" ? req.body : undefined }); return new Response(await res.text(), { status: res.status, headers: { "Content-Type": "application/json", ...CORS } }); }, };`;
+const WORKER_CODE = `const KALSHI = "https://api.elections.kalshi.com/trade-api/v2";
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, KALSHI-ACCESS-KEY, KALSHI-ACCESS-SIGNATURE, KALSHI-ACCESS-TIMESTAMP",
+};
+export default {
+  async fetch(req) {
+    if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+    const url = new URL(req.url);
+    const target = KALSHI + url.pathname + url.search;
+    const headers = {};
+    for (const [k, v] of req.headers) {
+      if (!["host","origin","referer"].includes(k)) headers[k] = v;
+    }
+    const res = await fetch(target, { method: req.method, headers, body: req.method !== "GET" ? req.body : undefined });
+    return new Response(await res.text(), { status: res.status, headers: { "Content-Type": "application/json", ...CORS } });
+  },
+};`;
 
 // ─── RSA-PSS signing ─────────────────────────────────────────────────────────
 function asn1Len(l) {
 if (l < 0x80) return new Uint8Array([l]);
 if (l < 0x100) return new Uint8Array([0x81, l]);
-return new Uint8Array([0x82, (l >> 8) & 0xff, l & 0xff]);
+return new Uint8Array([0x82, l >> 8 & 0xff, l & 0xff]);
 }
 function asn1Wrap(tag, c) {
-const l = asn1Len(c.length), o = new Uint8Array(1 + l.length + c.length);
-o[0] = tag; o.set(l, 1); o.set(c, 1 + l.length); return o;
+const l = asn1Len(c.length),
+o = new Uint8Array(1 + l.length + c.length);
+o[0] = tag;
+o.set(l, 1);
+o.set(c, 1 + l.length);
+return o;
 }
-function concat(…a) {
+function concat() {
+for (var _len = arguments.length, a = new Array(_len), _key2 = 0; _key2 < _len; _key2++) {
+a[_key2] = arguments[_key2];
+}
 const o = new Uint8Array(a.reduce((s, x) => s + x.length, 0));
-let i = 0; for (const x of a) { o.set(x, i); i += x.length; } return o;
+let i = 0;
+for (const x of a) {
+o.set(x, i);
+i += x.length;
+}
+return o;
 }
 function pkcs1ToPkcs8(der) {
-const v = new Uint8Array([0x02,0x01,0x00]);
-const oid = new Uint8Array([0x30,0x0d,0x06,0x09,0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01,0x05,0x00]);
+const v = new Uint8Array([0x02, 0x01, 0x00]);
+const oid = new Uint8Array([0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00]);
 return asn1Wrap(0x30, concat(v, oid, asn1Wrap(0x04, der)));
 }
 async function importPrivateKey(pem) {
@@ -51,31 +87,56 @@ const clean = pem.replace(/—–[^-]+—–/g, “”).replace(/\s+/g, “”);
 if (!clean) throw new Error(“Empty key”);
 let der = Uint8Array.from(atob(clean), c => c.charCodeAt(0));
 if (isPkcs1) der = pkcs1ToPkcs8(der);
-return crypto.subtle.importKey(“pkcs8”, der.buffer, { name:“RSA-PSS”, hash:“SHA-256” }, false, [“sign”]);
+return crypto.subtle.importKey(“pkcs8”, der.buffer, {
+name: “RSA-PSS”,
+hash: “SHA-256”
+}, false, [“sign”]);
 }
 async function rsaSign(key, keyId, method, path) {
 const ts = Date.now().toString();
 const msg = new TextEncoder().encode(`${ts}${method}${path.split("?")[0]}`);
-const sig = await crypto.subtle.sign({ name:“RSA-PSS”, saltLength:32 }, key, msg);
-return { “KALSHI-ACCESS-KEY”: keyId, “KALSHI-ACCESS-TIMESTAMP”: ts, “KALSHI-ACCESS-SIGNATURE”: btoa(String.fromCharCode(…new Uint8Array(sig))) };
+const sig = await crypto.subtle.sign({
+name: “RSA-PSS”,
+saltLength: 32
+}, key, msg);
+return {
+“KALSHI-ACCESS-KEY”: keyId,
+“KALSHI-ACCESS-TIMESTAMP”: ts,
+“KALSHI-ACCESS-SIGNATURE”: btoa(String.fromCharCode(…new Uint8Array(sig)))
+};
 }
 
 // ─── Kalshi API ───────────────────────────────────────────────────────────────
 const KALSHI_BASE = “https://api.elections.kalshi.com/trade-api/v2”;
-let _proxy = “”, _keyId = “”, _key = null;
-function setProxy(url) { _proxy = url.replace(//+$/, “”); }
-async function setCredentials(keyId, pem) { _keyId = keyId.trim(); _key = await importPrivateKey(pem); }
-
-async function kalshiReq(path, method = “GET”, body = null) {
+let _proxy = “”,
+_keyId = “”,
+_key = null;
+function setProxy(url) {
+_proxy = url.replace(//+$/, “”);
+}
+async function setCredentials(keyId, pem) {
+_keyId = keyId.trim();
+_key = await importPrivateKey(pem);
+}
+async function kalshiReq(path) {
+let method = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : “GET”;
+let body = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : null;
 const base = _proxy || KALSHI_BASE;
 const authH = await rsaSign(_key, _keyId, method, “/trade-api/v2” + path);
-const h = { “Content-Type”: “application/json”, …authH };
-const opts = { method, headers: h };
+const h = {
+“Content-Type”: “application/json”,
+…authH
+};
+const opts = {
+method,
+headers: h
+};
 if (!_proxy) opts.mode = “cors”;
 if (body) opts.body = JSON.stringify(body);
 let res;
-try { res = await fetch(`${base}${path}`, opts); }
-catch (e) {
+try {
+res = await fetch(`${base}${path}`, opts);
+} catch (e) {
 const m = e.message || “”;
 if (!*proxy && (m.includes(“Failed to fetch”) || m.includes(“Load failed”) || m.includes(“NetworkError”))) throw new Error(“CORS_BLOCKED”);
 throw e;
@@ -83,61 +144,75 @@ throw e;
 if (!res.ok) {
 const t = await res.text().catch(() => “”);
 let d = t;
-try { const j = JSON.parse(t); d = j.message || j.error || j.detail || t; } catch (*) {}
+try {
+const j = JSON.parse(t);
+d = j.message || j.error || j.detail || t;
+} catch (*) {}
 throw new Error(`HTTP ${res.status}: ${d}`);
 }
 return res.json();
 }
-
-function d2c(d) { return d != null ? Math.round(parseFloat(d) * 100) : null; }
-function normalizeMarket(m) {
-const yb = m.yes_bid ?? d2c(m.yes_bid_dollars) ?? m.last_price ?? 50;
-const ya = m.yes_ask ?? d2c(m.yes_ask_dollars) ?? yb + 4;
-const nb = m.no_bid  ?? d2c(m.no_bid_dollars)  ?? (100 - ya);
-const lp = m.last_price ?? d2c(m.last_price_dollars) ?? 50;
-const vol = m.volume ?? m.volume_24h ?? 0;
-return { …m, yes_bid: yb, yes_ask: ya, no_bid: nb, last_price: lp, volume: vol };
+function d2c(d) {
+return d != null ? Math.round(parseFloat(d) * 100) : null;
 }
-
-const getMarkets = (cursor = “”) => {
-const p = new URLSearchParams({ limit: 200, status: “open” });
-if (cursor) p.set(“cursor”, cursor);
-return kalshiReq(`/markets?${p}`).then(d => ({ …d, markets: (d.markets || []).map(normalizeMarket) }));
+function normalizeMarket(m) {
+var _ref, _ref2, _m$yes_bid, _ref3, _m$yes_ask, _ref4, _m$no_bid, _ref5, _m$last_price, _ref6, _m$volume;
+const yb = (_ref = (_ref2 = (_m$yes_bid = m.yes_bid) !== null && _m$yes_bid !== void 0 ? _m$yes_bid : d2c(m.yes_bid_dollars)) !== null && _ref2 !== void 0 ? _ref2 : m.last_price) !== null && _ref !== void 0 ? _ref : 50;
+const ya = (_ref3 = (_m$yes_ask = m.yes_ask) !== null && _m$yes_ask !== void 0 ? _m$yes_ask : d2c(m.yes_ask_dollars)) !== null && _ref3 !== void 0 ? _ref3 : yb + 4;
+const nb = (_ref4 = (_m$no_bid = m.no_bid) !== null && _m$no_bid !== void 0 ? _m$no_bid : d2c(m.no_bid_dollars)) !== null && _ref4 !== void 0 ? _ref4 : 100 - ya;
+const lp = (_ref5 = (_m$last_price = m.last_price) !== null && _m$last_price !== void 0 ? _m$last_price : d2c(m.last_price_dollars)) !== null && _ref5 !== void 0 ? _ref5 : 50;
+const vol = (_ref6 = (_m$volume = m.volume) !== null && _m$volume !== void 0 ? _m$volume : m.volume_24h) !== null && _ref6 !== void 0 ? _ref6 : 0;
+return {
+…m,
+yes_bid: yb,
+yes_ask: ya,
+no_bid: nb,
+last_price: lp,
+volume: vol
 };
-const getBalance   = () => kalshiReq(”/portfolio/balance”);
+}
+const getMarkets = function () {
+let cursor = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : “”;
+const p = new URLSearchParams({
+limit: 200,
+status: “open”
+});
+if (cursor) p.set(“cursor”, cursor);
+return kalshiReq(`/markets?${p}`).then(d => ({
+…d,
+markets: (d.markets || []).map(normalizeMarket)
+}));
+};
+const getBalance = () => kalshiReq(”/portfolio/balance”);
 const getPositions = () => kalshiReq(”/portfolio/positions”);
-const placeOrder   = (ticker, side, count, price) =>
-kalshiReq(”/orders”, “POST”, {
-ticker, action: “buy”, side, count, type: “limit”,
+const placeOrder = (ticker, side, count, price) => kalshiReq(”/orders”, “POST”, {
+ticker,
+action: “buy”,
+side,
+count,
+type: “limit”,
 yes_price: side === “yes” ? price : 100 - price,
-no_price:  side === “no”  ? price : 100 - price,
-time_in_force: “immediate_or_cancel”,
+no_price: side === “no” ? price : 100 - price,
+time_in_force: “immediate_or_cancel”
 });
 
 // ─── Category Filter ──────────────────────────────────────────────────────────
 // Kalshi’s official categories — we whitelist everything except sports
-const ALLOWED_CATEGORIES = new Set([
-“politics”,“political”,“crypto”,“cryptocurrency”,“culture”,“economics”,“economic”,
-“tech”,“technology”,“science”,“elections”,“election”,“climate”,“environment”,
-“companies”,“company”,“financials”,“financial”,“finance”,“markets”,“weather”,
-“business”,“health”,“international”,“mentions”,“entertainment”,
-]);
-const BLOCKED_CATEGORIES = new Set([“sports”,“sport”]);
+const ALLOWED_CATEGORIES = new Set([“politics”, “political”, “crypto”, “cryptocurrency”, “culture”, “economics”, “economic”, “tech”, “technology”, “science”, “elections”, “election”, “climate”, “environment”, “companies”, “company”, “financials”, “financial”, “finance”, “markets”, “weather”, “business”, “health”, “international”, “mentions”, “entertainment”]);
+const BLOCKED_CATEGORIES = new Set([“sports”, “sport”]);
 
 // Sports player name patterns — “yes FirstName LastName: N+”
 const PLAYER_STAT_RE = /^yes\s+[A-Z][a-z]+\s+[A-Z][a-z]+\s*:/;
 // Over/under scoring lines
-const OVER_UNDER_RE  = /\b(over|under)\s+\d+.?\d*\s*(runs?|hits?|rbis?|points?|goals?|assists?|rebounds?|yards?|touchdowns?|saves?|strikeouts?|home runs?|stolen bases?)/i;
+const OVER_UNDER_RE = /\b(over|under)\s+\d+.?\d*\s*(runs?|hits?|rbis?|points?|goals?|assists?|rebounds?|yards?|touchdowns?|saves?|strikeouts?|home runs?|stolen bases?)/i;
 // Sports bracket: “yes Team1, yes Team2”
-const BRACKET_RE     = /\b(yes|no)\s+[A-Z][a-z]+.*,\s*(yes|no)\s+[A-Z][a-z]+/;
-
+const BRACKET_RE = /\b(yes|no)\s+[A-Z][a-z]+.*,\s*(yes|no)\s+[A-Z][a-z]+/;
 function isSportsMarket(m) {
 // 1. Use category field if Kalshi provides it
 const cat = (m.category || m.event_category || “”).toLowerCase();
 if (BLOCKED_CATEGORIES.has(cat)) return true;
 // Don’t do further checks if category is explicitly allowed
 if (cat && ALLOWED_CATEGORIES.has(cat)) return false;
-
 const title = m.title || “”;
 const ticker = m.ticker || “”;
 
@@ -151,10 +226,7 @@ if (BRACKET_RE.test(title)) return true;
 if (/^KX[A-Z]*(NFL|NBA|MLB|NHL|MLS|NCAA|PGA|UFC|NASCAR)/i.test(ticker)) return true;
 // 6. Explicit sports keywords (last resort — shorter list now that category does the heavy lifting)
 const t = `${title} ${ticker}`.toLowerCase();
-const SW = [“nfl game”,“nba game”,“mlb game”,“nhl game”,“super bowl”,“world series”,“stanley cup”,
-“nba finals”,“touchdown”,“home run”,“hat trick”,“slam dunk”,“overtime shootout”,
-“runs scored”,“rbis”,“stolen base”,“strikeouts”,“rushing yards”,“passing yards”,
-“over 0.5 goals”,“over 1.5 goals”,“series winner”,“game winner”];
+const SW = [“nfl game”, “nba game”, “mlb game”, “nhl game”, “super bowl”, “world series”, “stanley cup”, “nba finals”, “touchdown”, “home run”, “hat trick”, “slam dunk”, “overtime shootout”, “runs scored”, “rbis”, “stolen base”, “strikeouts”, “rushing yards”, “passing yards”, “over 0.5 goals”, “over 1.5 goals”, “series winner”, “game winner”];
 return SW.some(kw => t.includes(kw));
 }
 
@@ -162,28 +234,40 @@ return SW.some(kw => t.includes(kw));
 async function fetchWeatherSignal(marketTitle) {
 const res = await fetch(“https://api.anthropic.com/v1/messages”, {
 method: “POST”,
-headers: { “Content-Type”: “application/json” },
+headers: {
+“Content-Type”: “application/json”
+},
 body: JSON.stringify({
 model: “claude-sonnet-4-20250514”,
 max_tokens: 600,
-tools: [{ type: “web_search_20250305”, name: “web_search” }],
-messages: [{ role: “user”, content:
-`Search for current weather forecasts, meteorological data, and climate patterns relevant to: "${marketTitle}" Look at NOAA, Weather.com, AccuWeather, or NWS data. Respond ONLY with valid JSON: {"adjustment":<-15 to +15>,"confidence":<0-100>,"reasoning":"<one sentence>","recommended_side":"yes"|"no"|"skip","source":"<weather source used>"}` }]
+tools: [{
+type: “web_search_20250305”,
+name: “web_search”
+}],
+messages: [{
+role: “user”,
+content: `Search for current weather forecasts, meteorological data, and climate patterns relevant to: "${marketTitle}" Look at NOAA, Weather.com, AccuWeather, or NWS data. Respond ONLY with valid JSON: {"adjustment":<-15 to +15>,"confidence":<0-100>,"reasoning":"<one sentence>","recommended_side":"yes"|"no"|"skip","source":"<weather source used>"}`
+}]
 })
 });
 const data = await res.json();
 const text = data.content.filter(b => b.type === “text”).map(b => b.text).join(””);
-const s = text.indexOf(”{”), e = text.lastIndexOf(”}”);
+const s = text.indexOf(”{”),
+e = text.lastIndexOf(”}”);
 return JSON.parse(text.slice(s, e + 1));
 }
 
 // ─── Strategy — Multiple Edges ────────────────────────────────────────────────
-function daysUntil(iso) { return (new Date(iso) - Date.now()) / 86400000; }
-function urgencyMult(days) {
-if (days < 0.5) return 1.5; if (days < 1) return 1.25;
-if (days < 2) return 1.1;   if (days < 4) return 1.05; return 1.0;
+function daysUntil(iso) {
+return (new Date(iso) - Date.now()) / 86400000;
 }
-
+function urgencyMult(days) {
+if (days < 0.5) return 1.5;
+if (days < 1) return 1.25;
+if (days < 2) return 1.1;
+if (days < 4) return 1.05;
+return 1.0;
+}
 function kellySize(estWinProb, priceCents, fraction, maxCents, days) {
 if (!priceCents || priceCents <= 0 || priceCents >= 100 || !maxCents) return 0;
 const cost = priceCents / 100;
@@ -193,16 +277,16 @@ const f = Math.max(0, (b * p - (1 - p)) / b);
 const r = Math.min(Math.round(f * fraction * maxCents * urgencyMult(days)), maxCents);
 return isNaN(r) ? 0 : r;
 }
-
-function analyzeMarket(market, config, extraData = null) {
+function analyzeMarket(market, config) {
+var _market$yes_bid, _market$yes_ask, _market$no_bid, _market$volume;
+let extraData = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : null;
 if (isSportsMarket(market)) return null;
-
-const yesBid = market.yes_bid ?? 50;
-const yesAsk = market.yes_ask ?? yesBid + 4;
-const noBid  = market.no_bid  ?? (100 - yesAsk);
-const vol    = market.volume ?? 0;
-const sum    = yesBid + noBid;
-const days   = daysUntil(market.close_time);
+const yesBid = (_market$yes_bid = market.yes_bid) !== null && _market$yes_bid !== void 0 ? _market$yes_bid : 50;
+const yesAsk = (_market$yes_ask = market.yes_ask) !== null && _market$yes_ask !== void 0 ? _market$yes_ask : yesBid + 4;
+const noBid = (_market$no_bid = market.no_bid) !== null && _market$no_bid !== void 0 ? _market$no_bid : 100 - yesAsk;
+const vol = (_market$volume = market.volume) !== null && _market$volume !== void 0 ? _market$volume : 0;
+const sum = yesBid + noBid;
+const days = daysUntil(market.close_time);
 
 // Guard: skip markets with no real pricing
 if (yesBid <= 0 || noBid <= 0) return null;
@@ -210,11 +294,18 @@ if (yesBid <= 0 || noBid <= 0) return null;
 // ── 1. ARBITRAGE ─────────────────────────────────────────────────────────
 if (sum <= 93) {
 const profit = 100 - sum;
-return { signal:“ARB”, side:“yes”, estWinProb:1.0, contractPrice:yesBid,
-edge:profit/100, label:`Arb +${profit.toFixed(1)}¢`, color:”#00ff88”, quality:100,
-why:`YES(${yesBid}¢)+NO(${noBid}¢)=${sum}¢ < $1 — guaranteed profit` };
+return {
+signal: “ARB”,
+side: “yes”,
+estWinProb: 1.0,
+contractPrice: yesBid,
+edge: profit / 100,
+label: `Arb +${profit.toFixed(1)}¢`,
+color: “#00ff88”,
+quality: 100,
+why: `YES(${yesBid}¢)+NO(${noBid}¢)=${sum}¢ < $1 — guaranteed profit`
+};
 }
-
 const mid = (yesBid + (100 - noBid)) / 2;
 
 // ── 2. VOLUME-WEIGHTED MOMENTUM EDGE ──────────────────────────────────────
@@ -225,19 +316,35 @@ const spread = yesAsk - yesBid;
 // Tight spread + high volume + clear direction = market has found true price
 if (spread <= 5 && mid >= 65 && mid <= 92) {
 // Ride the consensus — high volume markets tend to be efficient on direction
-const edge = (mid - 62) / 100;  // edge over fair coin
+const edge = (mid - 62) / 100; // edge over fair coin
 if (edge >= config.minEdge) {
-return { signal:“VOL”, side:“yes”, estWinProb:mid/100, contractPrice:yesBid,
-edge, label:`Vol ${(vol/1000).toFixed(0)}k @ ${mid.toFixed(0)}%`, color:”#00ff88”, quality:Math.min(85, 60 + Math.floor(vol/5000)),
-why:`High volume (${(vol/1000).toFixed(0)}k) with tight spread confirms ${mid.toFixed(0)}% probability` };
+return {
+signal: “VOL”,
+side: “yes”,
+estWinProb: mid / 100,
+contractPrice: yesBid,
+edge,
+label: `Vol ${(vol / 1000).toFixed(0)}k @ ${mid.toFixed(0)}%`,
+color: “#00ff88”,
+quality: Math.min(85, 60 + Math.floor(vol / 5000)),
+why: `High volume (${(vol / 1000).toFixed(0)}k) with tight spread confirms ${mid.toFixed(0)}% probability`
+};
 }
 }
 if (spread <= 5 && mid >= 8 && mid <= 35) {
 const edge = (38 - mid) / 100;
 if (edge >= config.minEdge) {
-return { signal:“VOL”, side:“no”, estWinProb:(100-mid)/100, contractPrice:noBid,
-edge, label:`Vol ${(vol/1000).toFixed(0)}k @ ${mid.toFixed(0)}%`, color:”#00ff88”, quality:Math.min(85, 60 + Math.floor(vol/5000)),
-why:`High volume (${(vol/1000).toFixed(0)}k) confirms NO at ${mid.toFixed(0)}%` };
+return {
+signal: “VOL”,
+side: “no”,
+estWinProb: (100 - mid) / 100,
+contractPrice: noBid,
+edge,
+label: `Vol ${(vol / 1000).toFixed(0)}k @ ${mid.toFixed(0)}%`,
+color: “#00ff88”,
+quality: Math.min(85, 60 + Math.floor(vol / 5000)),
+why: `High volume (${(vol / 1000).toFixed(0)}k) confirms NO at ${mid.toFixed(0)}%`
+};
 }
 }
 }
@@ -247,77 +354,134 @@ why:`High volume (${(vol/1000).toFixed(0)}k) confirms NO at ${mid.toFixed(0)}%` 
 if (config.fadeExtremes) {
 if (mid > 92 && mid <= 98) {
 const edge = (mid - 90) / 100;
-if (edge >= config.minEdge)
-return { signal:“FADE”, side:“no”, estWinProb:(100-mid)/100, contractPrice:noBid,
-edge, label:`Fade ${mid.toFixed(0)}%`, color:”#ff6b6b”, quality:62,
-why:`Market at ${mid.toFixed(0)}% is historically overpriced — fading extreme` };
+if (edge >= config.minEdge) return {
+signal: “FADE”,
+side: “no”,
+estWinProb: (100 - mid) / 100,
+contractPrice: noBid,
+edge,
+label: `Fade ${mid.toFixed(0)}%`,
+color: “#ff6b6b”,
+quality: 62,
+why: `Market at ${mid.toFixed(0)}% is historically overpriced — fading extreme`
+};
 }
 if (mid < 8 && mid >= 2) {
 const edge = (10 - mid) / 100;
-if (edge >= config.minEdge)
-return { signal:“FADE”, side:“yes”, estWinProb:mid/100, contractPrice:yesBid,
-edge, label:`Fade ${mid.toFixed(0)}%`, color:”#ff6b6b”, quality:62,
-why:`Market at ${mid.toFixed(0)}% is historically underpriced` };
+if (edge >= config.minEdge) return {
+signal: “FADE”,
+side: “yes”,
+estWinProb: mid / 100,
+contractPrice: yesBid,
+edge,
+label: `Fade ${mid.toFixed(0)}%`,
+color: “#ff6b6b”,
+quality: 62,
+why: `Market at ${mid.toFixed(0)}% is historically underpriced`
+};
 }
 }
 
 // ── 4. WEATHER SIGNAL ────────────────────────────────────────────────────
-if (extraData?.type === “weather” && extraData.confidence >= config.newsMinConf && Math.abs(extraData.adjustment) >= 5) {
+if ((extraData === null || extraData === void 0 ? void 0 : extraData.type) === “weather” && extraData.confidence >= config.newsMinConf && Math.abs(extraData.adjustment) >= 5) {
 const adj = extraData.adjustment;
 const adjMid = Math.max(3, Math.min(97, mid + adj));
 const side = adj > 0 ? “yes” : “no”;
 const price = side === “yes” ? yesBid : noBid;
-const estWin = side === “yes” ? adjMid/100 : (100-adjMid)/100;
+const estWin = side === “yes” ? adjMid / 100 : (100 - adjMid) / 100;
 const marketImplied = price / 100;
 const edge = estWin - marketImplied;
-if (edge >= config.minEdge)
-return { signal:“WTHR”, side, estWinProb:estWin, contractPrice:price,
-edge, label:`Weather ${adj>0?"+":""}${adj}¢ (${extraData.confidence}%)`, color:”#38bdf8”, quality:65,
-why:`Weather data: ${extraData.reasoning}` };
+if (edge >= config.minEdge) return {
+signal: “WTHR”,
+side,
+estWinProb: estWin,
+contractPrice: price,
+edge,
+label: `Weather ${adj > 0 ? "+" : ""}${adj}¢ (${extraData.confidence}%)`,
+color: “#38bdf8”,
+quality: 65,
+why: `Weather data: ${extraData.reasoning}`
+};
 }
-
 return null;
 }
 
 // ─── Paper Trade Simulation ───────────────────────────────────────────────────
-const EDGE_REAL   = { ARB:1.00, VOL:0.55, FADE:0.25, WTHR:0.45 };
-const FILL_RATE   = { ARB:1.00, VOL:0.78, FADE:0.65, WTHR:0.70 };
-const KALSHI_FEE  = 0.07;
-
+const EDGE_REAL = {
+ARB: 1.00,
+VOL: 0.55,
+FADE: 0.25,
+WTHR: 0.45
+};
+const FILL_RATE = {
+ARB: 1.00,
+VOL: 0.78,
+FADE: 0.65,
+WTHR: 0.70
+};
+const KALSHI_FEE = 0.07;
 function simulateTrade(signal, priceCents, costCents) {
-if (!priceCents || priceCents <= 0 || !costCents || costCents <= 0) return { filled:false };
+var _FILL_RATE$type, _EDGE_REAL$type;
+if (!priceCents || priceCents <= 0 || !costCents || costCents <= 0) return {
+filled: false
+};
 const type = signal.signal;
-if (Math.random() > (FILL_RATE[type] ?? 0.70)) return { filled:false };
+if (Math.random() > ((_FILL_RATE$type = FILL_RATE[type]) !== null && _FILL_RATE$type !== void 0 ? _FILL_RATE$type : 0.70)) return {
+filled: false
+};
 const implied = priceCents / 100;
 const claimed = signal.estWinProb - implied;
-const realized = claimed * (EDGE_REAL[type] ?? 0.30);
-const noise  = (Math.random() - 0.5) * 0.06;
-const trueP  = Math.max(0.02, Math.min(0.98, implied + realized + noise));
-const won    = Math.random() < trueP;
+const realized = claimed * ((_EDGE_REAL$type = EDGE_REAL[type]) !== null && _EDGE_REAL$type !== void 0 ? _EDGE_REAL$type : 0.30);
+const noise = (Math.random() - 0.5) * 0.06;
+const trueP = Math.max(0.02, Math.min(0.98, implied + realized + noise));
+const won = Math.random() < trueP;
 const payout = won ? Math.round(costCents * ((100 - priceCents) / priceCents)) : 0;
-const fee    = won ? Math.round(payout * KALSHI_FEE) : 0;
-return { filled:true, won, net: won ? payout - fee : -costCents, fee, trueWinProb:trueP };
+const fee = won ? Math.round(payout * KALSHI_FEE) : 0;
+return {
+filled: true,
+won,
+net: won ? payout - fee : -costCents,
+fee,
+trueWinProb: trueP
+};
 }
 
 // ─── Circuit Breaker ──────────────────────────────────────────────────────────
 // Stops trading automatically if too many errors or consecutive losses
 function makeCircuitBreaker() {
-let errors = 0, consecLosses = 0;
+let errors = 0,
+consecLosses = 0;
 const RESET_MS = 10 * 60 * 1000; // reset error count every 10 min
 let lastErrorTs = 0;
 return {
 recordError() {
 if (Date.now() - lastErrorTs > RESET_MS) errors = 0;
-errors++; lastErrorTs = Date.now();
+errors++;
+lastErrorTs = Date.now();
 return errors;
 },
-recordLoss() { consecLosses++; return consecLosses; },
-recordWin()  { consecLosses = 0; },
-shouldTrip(maxErrors = 5, maxLosses = 6) {
+recordLoss() {
+consecLosses++;
+return consecLosses;
+},
+recordWin() {
+consecLosses = 0;
+},
+shouldTrip() {
+let maxErrors = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : 5;
+let maxLosses = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : 6;
 return errors >= maxErrors || consecLosses >= maxLosses;
 },
-reset() { errors = 0; consecLosses = 0; },
-status() { return { errors, consecLosses }; },
+reset() {
+errors = 0;
+consecLosses = 0;
+},
+status() {
+return {
+errors,
+consecLosses
+};
+}
 };
 }
 const breaker = makeCircuitBreaker();
@@ -325,127 +489,367 @@ const breaker = makeCircuitBreaker();
 // ─── Metrics ──────────────────────────────────────────────────────────────────
 function initMetrics() {
 return {
-evaluated: 0,    // markets scanned
-signalsFound: 0, // signals generated
-attempted: 0,    // orders attempted
-filled: 0,       // orders that filled
+evaluated: 0,
+// markets scanned
+signalsFound: 0,
+// signals generated
+attempted: 0,
+// orders attempted
+filled: 0,
+// orders that filled
 wins: 0,
 losses: 0,
-dollarPlaced: 0, // cents
-dollarEarned: 0, // cents (net P&L)
+dollarPlaced: 0,
+// cents
+dollarEarned: 0,
+// cents (net P&L)
 bySignal: {
-ARB:  { attempted:0, filled:0, wins:0, losses:0, placed:0, earned:0 },
-VOL:  { attempted:0, filled:0, wins:0, losses:0, placed:0, earned:0 },
-FADE: { attempted:0, filled:0, wins:0, losses:0, placed:0, earned:0 },
-WTHR: { attempted:0, filled:0, wins:0, losses:0, placed:0, earned:0 },
+ARB: {
+attempted: 0,
+filled: 0,
+wins: 0,
+losses: 0,
+placed: 0,
+earned: 0
 },
+VOL: {
+attempted: 0,
+filled: 0,
+wins: 0,
+losses: 0,
+placed: 0,
+earned: 0
+},
+FADE: {
+attempted: 0,
+filled: 0,
+wins: 0,
+losses: 0,
+placed: 0,
+earned: 0
+},
+WTHR: {
+attempted: 0,
+filled: 0,
+wins: 0,
+losses: 0,
+placed: 0,
+earned: 0
+}
+}
 };
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const LIVE_CFG = {
 startBalanceCents: 10000,
-maxBetCents:       500,
-kellyFraction:     0.25,
-minEdge:           0.03,
-newsMinConf:       65,
-scanIntervalSec:   30,
-daysWindow:        14,    // 14-day window
-fadeExtremes:      true,
-volumeEdge:        true,
-minVolume:         5000,  // min $50 volume for VOL signal
-stopLossPct:       0.20,
-maxTradesPerScan:  3,
-circuitMaxErrors:  5,
-circuitMaxLosses:  6,
+maxBetCents: 500,
+kellyFraction: 0.25,
+minEdge: 0.03,
+newsMinConf: 65,
+scanIntervalSec: 30,
+daysWindow: 14,
+// 14-day window
+fadeExtremes: true,
+volumeEdge: true,
+minVolume: 5000,
+// min $50 volume for VOL signal
+stopLossPct: 0.20,
+maxTradesPerScan: 3,
+circuitMaxErrors: 5,
+circuitMaxLosses: 6
 };
 
 // ─── localStorage helpers ─────────────────────────────────────────────────────
-const LS = { KEY:“kt_key_id”, PEM:“kt_pem”, PROXY:“kt_proxy”, AUTO:“kt_auto_on”,
-ESTOP:“kt_estop”, METRICS:“kt_metrics”, CFG:“kt_config” };
+const LS = {
+KEY: “kt_key_id”,
+PEM: “kt_pem”,
+PROXY: “kt_proxy”,
+AUTO: “kt_auto_on”,
+ESTOP: “kt_estop”,
+METRICS: “kt_metrics”,
+CFG: “kt_config”
+};
 function loadSaved() {
 try {
 return {
-keyId:    localStorage.getItem(LS.KEY)   || “”,
-pemText:  localStorage.getItem(LS.PEM)   || “”,
+keyId: localStorage.getItem(LS.KEY) || “”,
+pemText: localStorage.getItem(LS.PEM) || “”,
 proxyUrl: localStorage.getItem(LS.PROXY) || “”,
-autoOn:   localStorage.getItem(LS.AUTO)  === “true”,
-eStopped: localStorage.getItem(LS.ESTOP) === “true”,
+autoOn: localStorage.getItem(LS.AUTO) === “true”,
+eStopped: localStorage.getItem(LS.ESTOP) === “true”
 };
-} catch { return { keyId:””, pemText:””, proxyUrl:””, autoOn:false, eStopped:false }; }
+} catch (*) {
+return {
+keyId: “”,
+pemText: “”,
+proxyUrl: “”,
+autoOn: false,
+eStopped: false
+};
+}
 }
 function saveCreds(k, p, u) {
-try { localStorage.setItem(LS.KEY, k); localStorage.setItem(LS.PEM, p); localStorage.setItem(LS.PROXY, u); } catch {}
+try {
+localStorage.setItem(LS.KEY, k);
+localStorage.setItem(LS.PEM, p);
+localStorage.setItem(LS.PROXY, u);
+} catch (*) {}
 }
-function saveAuto(v)   { try { localStorage.setItem(LS.AUTO,  String(v)); } catch {} }
-function saveEStop(v)  { try { localStorage.setItem(LS.ESTOP, String(v)); } catch {} }
-function clearCreds()  { try { Object.values(LS).forEach(k => localStorage.removeItem(k)); } catch {} }
-function saveMetrics(m){ try { localStorage.setItem(LS.METRICS, JSON.stringify(m)); } catch {} }
-function loadMetrics() { try { const v = localStorage.getItem(LS.METRICS); return v ? JSON.parse(v) : initMetrics(); } catch { return initMetrics(); } }
+function saveAuto(v) {
+try {
+localStorage.setItem(LS.AUTO, String(v));
+} catch (*) {}
+}
+function saveEStop(v) {
+try {
+localStorage.setItem(LS.ESTOP, String(v));
+} catch (*) {}
+}
+function clearCreds() {
+try {
+Object.values(LS).forEach(k => localStorage.removeItem(k));
+} catch (*) {}
+}
+function saveMetrics(m) {
+try {
+localStorage.setItem(LS.METRICS, JSON.stringify(m));
+} catch (*) {}
+}
+function loadMetrics() {
+try {
+const v = localStorage.getItem(LS.METRICS);
+return v ? JSON.parse(v) : initMetrics();
+} catch (_) {
+return initMetrics();
+}
+}
 
 // ─── Mock markets (demo only) ─────────────────────────────────────────────────
 function mockMarkets() {
 const n = Date.now();
-return [
-{ ticker:“FED-RATE-MAY”,    title:“Fed holds rates in May 2026?”,           yes_bid:68,yes_ask:72,no_bid:26,last_price:70, category:“economics”, close_time:new Date(n+2*864e5).toISOString(),  volume:95000  },
-{ ticker:“BTC-70K-WEEK”,    title:“BTC above $70k by end of week?”,         yes_bid:22,yes_ask:26,no_bid:72,last_price:24, category:“crypto”,    close_time:new Date(n+3*864e5).toISOString(),  volume:210000 },
-{ ticker:“CPI-BELOW-3”,     title:“CPI below 3% this report?”,              yes_bid:61,yes_ask:65,no_bid:33,last_price:63, category:“economics”, close_time:new Date(n+4*864e5).toISOString(),  volume:67000  },
-{ ticker:“SPY-530-WEEK”,    title:“SPY above $530 by Friday?”,              yes_bid:53,yes_ask:57,no_bid:41,last_price:55, category:“financials”,close_time:new Date(n+1.5*864e5).toISOString(),volume:120000 },
-{ ticker:“SENATE-BILL”,     title:“Senate passes budget bill this week?”,   yes_bid:38,yes_ask:43,no_bid:55,last_price:40, category:“politics”,  close_time:new Date(n+5*864e5).toISOString(),  volume:42000  },
-{ ticker:“ETH-4K-MONTH”,    title:“ETH above $4k this month?”,              yes_bid:29,yes_ask:34,no_bid:64,last_price:31, category:“crypto”,    close_time:new Date(n+8*864e5).toISOString(),  volume:88000  },
-{ ticker:“TSLA-BEAT”,       title:“TSLA beats earnings estimates?”,         yes_bid:55,yes_ask:59,no_bid:39,last_price:57, category:“companies”, close_time:new Date(n+6*864e5).toISOString(),  volume:180000 },
-{ ticker:“SNOW-CHICAGO”,    title:“Chicago gets >2 inches snow this week?”, yes_bid:18,yes_ask:22,no_bid:76,last_price:20, category:“weather”,   close_time:new Date(n+3.5*864e5).toISOString(),volume:15000  },
-{ ticker:“CLIMATE-BILL”,    title:“EPA releases new climate rule this week?”,yes_bid:44,yes_ask:49,no_bid:49,last_price:46, category:“climate”,  close_time:new Date(n+7*864e5).toISOString(),  volume:28000  },
-{ ticker:“AI-REGULATION”,   title:“Congress holds AI hearing this month?”,  yes_bid:71,yes_ask:75,no_bid:23,last_price:73, category:“tech”,      close_time:new Date(n+9*864e5).toISOString(),  volume:35000  },
-{ ticker:“GOLD-2400”,       title:“Gold above $2,400 by Friday?”,           yes_bid:74,yes_ask:79,no_bid:19,last_price:77, category:“financials”,close_time:new Date(n+1.8*864e5).toISOString(),volume:34000  },
-{ ticker:“USD-INDEX-UP”,    title:“USD index up this week?”,                yes_bid:46,yes_ask:51,no_bid:47,last_price:48, category:“financials”,close_time:new Date(n+4*864e5).toISOString(),  volume:28000  },
-{ ticker:“TRUMP-EXEC”,      title:“Trump signs executive order this week?”, yes_bid:82,yes_ask:86,no_bid:12,last_price:84, category:“politics”,  close_time:new Date(n+2.5*864e5).toISOString(),volume:55000  },
-{ ticker:“SOL-200”,         title:“SOL above $200 by end of week?”,         yes_bid:35,yes_ask:40,no_bid:58,last_price:37, category:“crypto”,    close_time:new Date(n+5.5*864e5).toISOString(),volume:72000  },
-{ ticker:“JOBLESS-250K”,    title:“Jobless claims under 250k?”,             yes_bid:62,yes_ask:67,no_bid:31,last_price:64, category:“economics”, close_time:new Date(n+3*864e5).toISOString(),  volume:41000  },
-].sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+return [{
+ticker: “FED-RATE-MAY”,
+title: “Fed holds rates in May 2026?”,
+yes_bid: 68,
+yes_ask: 72,
+no_bid: 26,
+last_price: 70,
+category: “economics”,
+close_time: new Date(n + 2 * 864e5).toISOString(),
+volume: 95000
+}, {
+ticker: “BTC-70K-WEEK”,
+title: “BTC above $70k by end of week?”,
+yes_bid: 22,
+yes_ask: 26,
+no_bid: 72,
+last_price: 24,
+category: “crypto”,
+close_time: new Date(n + 3 * 864e5).toISOString(),
+volume: 210000
+}, {
+ticker: “CPI-BELOW-3”,
+title: “CPI below 3% this report?”,
+yes_bid: 61,
+yes_ask: 65,
+no_bid: 33,
+last_price: 63,
+category: “economics”,
+close_time: new Date(n + 4 * 864e5).toISOString(),
+volume: 67000
+}, {
+ticker: “SPY-530-WEEK”,
+title: “SPY above $530 by Friday?”,
+yes_bid: 53,
+yes_ask: 57,
+no_bid: 41,
+last_price: 55,
+category: “financials”,
+close_time: new Date(n + 1.5 * 864e5).toISOString(),
+volume: 120000
+}, {
+ticker: “SENATE-BILL”,
+title: “Senate passes budget bill this week?”,
+yes_bid: 38,
+yes_ask: 43,
+no_bid: 55,
+last_price: 40,
+category: “politics”,
+close_time: new Date(n + 5 * 864e5).toISOString(),
+volume: 42000
+}, {
+ticker: “ETH-4K-MONTH”,
+title: “ETH above $4k this month?”,
+yes_bid: 29,
+yes_ask: 34,
+no_bid: 64,
+last_price: 31,
+category: “crypto”,
+close_time: new Date(n + 8 * 864e5).toISOString(),
+volume: 88000
+}, {
+ticker: “TSLA-BEAT”,
+title: “TSLA beats earnings estimates?”,
+yes_bid: 55,
+yes_ask: 59,
+no_bid: 39,
+last_price: 57,
+category: “companies”,
+close_time: new Date(n + 6 * 864e5).toISOString(),
+volume: 180000
+}, {
+ticker: “SNOW-CHICAGO”,
+title: “Chicago gets >2 inches snow this week?”,
+yes_bid: 18,
+yes_ask: 22,
+no_bid: 76,
+last_price: 20,
+category: “weather”,
+close_time: new Date(n + 3.5 * 864e5).toISOString(),
+volume: 15000
+}, {
+ticker: “CLIMATE-BILL”,
+title: “EPA releases new climate rule this week?”,
+yes_bid: 44,
+yes_ask: 49,
+no_bid: 49,
+last_price: 46,
+category: “climate”,
+close_time: new Date(n + 7 * 864e5).toISOString(),
+volume: 28000
+}, {
+ticker: “AI-REGULATION”,
+title: “Congress holds AI hearing this month?”,
+yes_bid: 71,
+yes_ask: 75,
+no_bid: 23,
+last_price: 73,
+category: “tech”,
+close_time: new Date(n + 9 * 864e5).toISOString(),
+volume: 35000
+}, {
+ticker: “GOLD-2400”,
+title: “Gold above $2,400 by Friday?”,
+yes_bid: 74,
+yes_ask: 79,
+no_bid: 19,
+last_price: 77,
+category: “financials”,
+close_time: new Date(n + 1.8 * 864e5).toISOString(),
+volume: 34000
+}, {
+ticker: “USD-INDEX-UP”,
+title: “USD index up this week?”,
+yes_bid: 46,
+yes_ask: 51,
+no_bid: 47,
+last_price: 48,
+category: “financials”,
+close_time: new Date(n + 4 * 864e5).toISOString(),
+volume: 28000
+}, {
+ticker: “TRUMP-EXEC”,
+title: “Trump signs executive order this week?”,
+yes_bid: 82,
+yes_ask: 86,
+no_bid: 12,
+last_price: 84,
+category: “politics”,
+close_time: new Date(n + 2.5 * 864e5).toISOString(),
+volume: 55000
+}, {
+ticker: “SOL-200”,
+title: “SOL above $200 by end of week?”,
+yes_bid: 35,
+yes_ask: 40,
+no_bid: 58,
+last_price: 37,
+category: “crypto”,
+close_time: new Date(n + 5.5 * 864e5).toISOString(),
+volume: 72000
+}, {
+ticker: “JOBLESS-250K”,
+title: “Jobless claims under 250k?”,
+yes_bid: 62,
+yes_ask: 67,
+no_bid: 31,
+last_price: 64,
+category: “economics”,
+close_time: new Date(n + 3 * 864e5).toISOString(),
+volume: 41000
+}].sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 function KalshiTrader() {
 const saved = loadSaved();
-const [screen, setScreen]         = useState(“login”);
-const [keyId, setKeyId]           = useState(saved.keyId);
-const [pemText, setPemText]       = useState(saved.pemText);
-const [proxyUrl, setProxyUrl]     = useState(saved.proxyUrl);
+const [screen, setScreen] = useState(“login”);
+const [keyId, setKeyId] = useState(saved.keyId);
+const [pemText, setPemText] = useState(saved.pemText);
+const [proxyUrl, setProxyUrl] = useState(saved.proxyUrl);
 const [savedCreds, setSavedCreds] = useState(!!(saved.keyId && saved.pemText));
-const [demo, setDemo]             = useState(false);
-const [paper, setPaper]           = useState(false);
-const [loading, setLoading]       = useState(false);
-const [err, setErr]               = useState(””);
-const [markets, setMarkets]       = useState([]);
-const [positions, setPositions]   = useState([]);
-const [balance, setBalance]       = useState(null);
-const [config, setConfig]         = useState(LIVE_CFG);
-const [log, setLog]               = useState([]);
-const [metrics, setMetrics]       = useState(loadMetrics);
-const [pnl, setPnl]               = useState({ realized:0, unrealized:0 });
-const [autoOn, setAutoOnRaw]      = useState(saved.autoOn);
-const [emergencyStop, setESRaw]   = useState(saved.eStopped);
+const [demo, setDemo] = useState(false);
+const [paper, setPaper] = useState(false);
+const [loading, setLoading] = useState(false);
+const [err, setErr] = useState(””);
+const [markets, setMarkets] = useState([]);
+const [positions, setPositions] = useState([]);
+const [balance, setBalance] = useState(null);
+const [config, setConfig] = useState(LIVE_CFG);
+const [log, setLog] = useState([]);
+const [metrics, setMetrics] = useState(loadMetrics);
+const [pnl, setPnl] = useState({
+realized: 0,
+unrealized: 0
+});
+const [autoOn, setAutoOnRaw] = useState(saved.autoOn);
+const [emergencyStop, setESRaw] = useState(saved.eStopped);
 const [stopLossHit, setStopLossHit] = useState(false);
-const [countdown, setCountdown]   = useState(0);
-const [weatherCache, setWC]       = useState({});
-const [breakerStatus, setBreakerStatus] = useState({ errors:0, consecLosses:0 });
-const scanRef = useRef(null); const cdRef = useRef(null);
+const [countdown, setCountdown] = useState(0);
+const [weatherCache, setWC] = useState({});
+const [breakerStatus, setBreakerStatus] = useState({
+errors: 0,
+consecLosses: 0
+});
+const scanRef = useRef(null);
+const cdRef = useRef(null);
 const tradedRef = useRef(new Set());
-
-const setAutoOn = (v) => { saveAuto(v); setAutoOnRaw(v); };
-const setEStop  = (v) => { saveEStop(v); setESRaw(v); if (v) { setAutoOn(false); addLog(“🛑 EMERGENCY STOP ACTIVATED — all trading halted”, “error”); } };
-
-const addLog = useCallback((msg, type=“info”) => {
-setLog(l => [{ ts: new Date().toLocaleTimeString(), msg, type }, …l].slice(0, 300));
+const setAutoOn = v => {
+saveAuto(v);
+setAutoOnRaw(v);
+};
+const setEStop = v => {
+saveEStop(v);
+setESRaw(v);
+if (v) {
+setAutoOn(false);
+addLog(“🛑 EMERGENCY STOP ACTIVATED — all trading halted”, “error”);
+}
+};
+const addLog = useCallback(function (msg) {
+let type = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : “info”;
+setLog(l => [{
+ts: new Date().toLocaleTimeString(),
+msg,
+type
+}, …l].slice(0, 300));
 }, []);
-
-const updMetrics = useCallback((updates) => {
+const updMetrics = useCallback(updates => {
 setMetrics(m => {
-const n = { …m, …updates, bySignal: { …m.bySignal } };
+const n = {
+…m,
+…updates,
+bySignal: {
+…m.bySignal
+}
+};
 if (updates.bySignal) {
 for (const [k, v] of Object.entries(updates.bySignal)) {
-n.bySignal[k] = { …m.bySignal[k], …v };
+n.bySignal[k] = {
+…m.bySignal[k],
+…v
+};
 }
 }
 saveMetrics(n);
@@ -455,10 +859,16 @@ return n;
 
 // ── Auth ──
 const handleLogin = async () => {
-setLoading(true); setErr(””);
+setLoading(true);
+setErr(””);
 if (proxyUrl.trim()) setProxy(proxyUrl.trim());
-try { await setCredentials(keyId.trim(), pemText.trim()); }
-catch (e) { setErr(“Couldn’t read the private key. Paste the full key including —–BEGIN—– and —–END—– lines.”); setLoading(false); return; }
+try {
+await setCredentials(keyId.trim(), pemText.trim());
+} catch (e) {
+setErr(“Couldn’t read the private key. Paste the full key including —–BEGIN—– and —–END—– lines.”);
+setLoading(false);
+return;
+}
 try {
 await getBalance();
 saveCreds(keyId.trim(), pemText.trim(), proxyUrl.trim());
@@ -466,23 +876,39 @@ setSavedCreds(true);
 setScreen(“modeselect”);
 } catch (e) {
 const msg = e.message || “”;
-if (msg === “CORS_BLOCKED” || (!proxyUrl.trim() && (msg.includes(“Load failed”) || msg.includes(“Failed to fetch”)))) setScreen(“corserror”);
-else if (msg.includes(“Load failed”) || msg.includes(“Failed to fetch”)) setErr(“Network error — check your proxy URL ends in .workers.dev”);
-else if (msg.includes(“401”) || msg.includes(“403”)) setErr(“Kalshi rejected the key: “ + msg + “ — generate a fresh key pair on kalshi.com”);
-else setErr(msg);
+if (msg === “CORS_BLOCKED” || !proxyUrl.trim() && (msg.includes(“Load failed”) || msg.includes(“Failed to fetch”))) setScreen(“corserror”);else if (msg.includes(“Load failed”) || msg.includes(“Failed to fetch”)) setErr(“Network error — check your proxy URL ends in .workers.dev”);else if (msg.includes(“401”) || msg.includes(“403”)) setErr(“Kalshi rejected the key: “ + msg + “ — generate a fresh key pair on kalshi.com”);else setErr(msg);
 }
 setLoading(false);
 };
-
-const handlePaper  = () => { setPaper(true); setDemo(false); setBalance(10000); tradedRef.current.clear(); setScreen(“dash”); addLog(“Paper trading active — real Kalshi markets, simulated orders, $100 virtual balance”, “warn”); };
-const handleLive   = () => { setPaper(false); setDemo(false); setScreen(“dash”); addLog(“⚡ LIVE MODE — real money orders active”, “error”); };
-const handleDemo   = () => { setDemo(true); setBalance(10000); setMarkets(mockMarkets()); tradedRef.current.clear(); setScreen(“dash”); addLog(“Demo mode — mock markets, simulated trades”, “warn”); };
+const handlePaper = () => {
+setPaper(true);
+setDemo(false);
+setBalance(10000);
+tradedRef.current.clear();
+setScreen(“dash”);
+addLog(“Paper trading active — real Kalshi markets, simulated orders, $100 virtual balance”, “warn”);
+};
+const handleLive = () => {
+setPaper(false);
+setDemo(false);
+setScreen(“dash”);
+addLog(“⚡ LIVE MODE — real money orders active”, “error”);
+};
+const handleDemo = () => {
+setDemo(true);
+setBalance(10000);
+setMarkets(mockMarkets());
+tradedRef.current.clear();
+setScreen(“dash”);
+addLog(“Demo mode — mock markets, simulated trades”, “warn”);
+};
 
 // ── Fetch ──
 const fetchAll = useCallback(async () => {
 if (demo) return;
 try {
-let all = [], cursor = “”;
+let all = [],
+cursor = “”;
 // Paginate to get all markets
 for (let i = 0; i < 5; i++) {
 const data = await getMarkets(cursor);
@@ -490,19 +916,22 @@ all = all.concat(data.markets || []);
 cursor = data.cursor || “”;
 if (!cursor) break;
 }
-const eligible = all
-.filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
-.filter(m => !isSportsMarket(m))
-.sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+const eligible = all.filter(m => {
+const d = daysUntil(m.close_time);
+return d > 0 && d < config.daysWindow;
+}).filter(m => !isSportsMarket(m)).sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
 setMarkets(eligible);
 const [pData, bData] = await Promise.all([getPositions(), getBalance()]);
 setPositions(pData.market_positions || []);
 setBalance(bData.balance || 0);
 addLog(`Loaded ${eligible.length} eligible markets (${all.length} total, sports filtered)`, “info”);
-} catch (e) { addLog(`Fetch error: ${e.message}`, “error”); }
+} catch (e) {
+addLog(`Fetch error: ${e.message}`, “error”);
+}
 }, [demo, config.daysWindow, addLog]);
-
-useEffect(() => { if (!demo && screen === “dash”) fetchAll(); }, [demo, screen, fetchAll]);
+useEffect(() => {
+if (!demo && screen === “dash”) fetchAll();
+}, [demo, screen, fetchAll]);
 
 // ── Circuit breaker check ──
 const checkBreaker = useCallback(() => {
@@ -515,11 +944,12 @@ return false;
 }, [config.circuitMaxErrors, config.circuitMaxLosses, breakerStatus, addLog]);
 
 // ── Stop-loss ──
-const checkStopLoss = useCallback((bal) => {
+const checkStopLoss = useCallback(bal => {
 const floor = config.startBalanceCents * (1 - config.stopLossPct);
 if (bal < floor) {
-setStopLossHit(true); setAutoOn(false);
-addLog(`🛑 STOP-LOSS: balance $${(bal/100).toFixed(2)} below $${(floor/100).toFixed(2)}`, “error”);
+setStopLossHit(true);
+setAutoOn(false);
+addLog(`🛑 STOP-LOSS: balance $${(bal / 100).toFixed(2)} below $${(floor / 100).toFixed(2)}`, “error”);
 return true;
 }
 return false;
@@ -527,116 +957,159 @@ return false;
 
 // ── Weather fetch ──
 const fetchWeather = useCallback(async (ticker, title) => {
-setWC(c => ({ …c, [ticker]: { loading:true, data:null } }));
+setWC(c => ({
+…c,
+[ticker]: {
+loading: true,
+data: null
+}
+}));
 try {
 const data = await fetchWeatherSignal(title);
-setWC(c => ({ …c, [ticker]: { loading:false, data:{ …data, type:“weather” } } }));
-addLog(`Weather [${ticker}]: ${data.reasoning} (adj ${data.adjustment>0?"+":""}${data.adjustment}¢, ${data.confidence}% conf)`, “info”);
-} catch (e) { setWC(c => ({ …c, [ticker]: { loading:false, data:null } })); }
+setWC(c => ({
+…c,
+[ticker]: {
+loading: false,
+data: {
+…data,
+type: “weather”
+}
+}
+}));
+addLog(`Weather [${ticker}]: ${data.reasoning} (adj ${data.adjustment > 0 ? "+" : ""}${data.adjustment}¢, ${data.confidence}% conf)`, “info”);
+} catch (e) {
+setWC(c => ({
+…c,
+[ticker]: {
+loading: false,
+data: null
+}
+}));
+}
 }, [addLog]);
 
 // ── Main scan ──
 const runScan = useCallback(async () => {
 if (!autoOn || emergencyStop || stopLossHit) return;
 if (checkBreaker()) return;
-
-```
-const bal = balance ?? config.startBalanceCents;
+const bal = balance !== null && balance !== void 0 ? balance : config.startBalanceCents;
 if (checkStopLoss(bal)) return;
-
 const exposure = Math.min(5000 + Math.floor(Math.max(0, bal - config.startBalanceCents) / 10000) * 5000, bal * 0.5);
-addLog(`Scanning ${markets.length} markets… exposure cap $${(exposure/100).toFixed(0)}`, "info");
-
-const eligible = markets
-  .filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
-  .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
-
-let evaluated = 0, placed = 0;
-
+addLog(`Scanning ${markets.length} markets… exposure cap $${(exposure / 100).toFixed(0)}`, “info”);
+const eligible = markets.filter(m => {
+const d = daysUntil(m.close_time);
+return d > 0 && d < config.daysWindow;
+}).sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+let evaluated = 0,
+placed = 0;
 for (const m of eligible) {
-  if (placed >= config.maxTradesPerScan) break;
-  evaluated++;
-  if (tradedRef.current.has(m.ticker)) continue;
-
-  const isWeather = (m.category || "").toLowerCase() === "weather" || m.title.toLowerCase().includes("weather") || m.title.toLowerCase().includes("snow") || m.title.toLowerCase().includes("rain") || m.title.toLowerCase().includes("temperature") || m.title.toLowerCase().includes("hurricane");
-  const extraData = isWeather ? weatherCache[m.ticker]?.data : null;
-
-  const signal = analyzeMarket(m, config, extraData);
-  if (!signal) continue;
-
-  updMetrics({ evaluated: metrics.evaluated + evaluated, signalsFound: metrics.signalsFound + 1 });
-  evaluated = 0;
-
-  const days  = daysUntil(m.close_time);
-  const price = signal.side === "no" ? m.no_bid : m.yes_bid;
-  const cost  = kellySize(signal.estWinProb, price, config.kellyFraction, config.maxBetCents, days);
-
-  if (cost < 50) { addLog(`Skip ${m.ticker}: bet $${(cost/100).toFixed(2)} too small`, "info"); continue; }
-
-  addLog(`[${signal.signal}] ${m.title.slice(0,45)}… | $${(cost/100).toFixed(2)} | ${signal.label}`, "trade");
-  updMetrics({ attempted: metrics.attempted + 1, bySignal: { [signal.signal]: { attempted: (metrics.bySignal[signal.signal]?.attempted||0)+1 } } });
-
-  if (demo || paper) {
-    const sim = simulateTrade(signal, price, cost);
-    if (!sim.filled) { addLog(`⟳ Limit order not filled — ${m.ticker}`, "info"); continue; }
-
-    tradedRef.current.add(m.ticker);
-    breaker[sim.won ? "recordWin" : "recordLoss"]();
-    setBreakerStatus(breaker.status());
-
-    const fee = sim.fee > 0 ? ` (fee -$${(sim.fee/100).toFixed(2)})` : "";
-    addLog(`${sim.won ? "✓ WIN" : "✗ LOSS"}: ${sim.net >= 0 ? "+" : ""}$${(sim.net/100).toFixed(2)}${fee} | p=${(sim.trueWinProb*100).toFixed(0)}%`, sim.won ? "success" : "error");
-
-    setBalance(b => (b ?? 10000) + sim.net);
-    setPnl(p => ({ ...p, realized: p.realized + sim.net }));
-
-    const sig = signal.signal;
-    updMetrics({
-      filled:      metrics.filled + 1,
-      wins:        metrics.wins   + (sim.won ? 1 : 0),
-      losses:      metrics.losses + (sim.won ? 0 : 1),
-      dollarPlaced: metrics.dollarPlaced + cost,
-      dollarEarned: metrics.dollarEarned + sim.net,
-      bySignal: { [sig]: {
-        filled:  (metrics.bySignal[sig]?.filled ||0)+1,
-        wins:    (metrics.bySignal[sig]?.wins   ||0)+(sim.won?1:0),
-        losses:  (metrics.bySignal[sig]?.losses ||0)+(sim.won?0:1),
-        placed:  (metrics.bySignal[sig]?.placed ||0)+cost,
-        earned:  (metrics.bySignal[sig]?.earned ||0)+sim.net,
-      }}
-    });
-    if (!sim.won) { const n = breaker.recordLoss(); if (n >= config.circuitMaxLosses) checkBreaker(); }
-    placed++;
-  } else {
-    try {
-      await placeOrder(m.ticker, signal.side, Math.max(1, Math.round(cost/10)), price);
-      tradedRef.current.add(m.ticker);
-      addLog(`✓ Order placed: ${m.ticker}`, "success");
-      updMetrics({ filled: metrics.filled+1, attempted: metrics.attempted+1, dollarPlaced: metrics.dollarPlaced+cost });
-      placed++;
-    } catch (e) {
-      const errCount = breaker.recordError();
-      setBreakerStatus(breaker.status());
-      addLog(`✗ Order failed [${errCount} errors]: ${e.message}`, "error");
-      if (checkBreaker()) break;
-    }
-  }
+var _weatherCache$m$ticke, _metrics$bySignal$sig;
+if (placed >= config.maxTradesPerScan) break;
+evaluated++;
+if (tradedRef.current.has(m.ticker)) continue;
+const isWeather = (m.category || “”).toLowerCase() === “weather” || m.title.toLowerCase().includes(“weather”) || m.title.toLowerCase().includes(“snow”) || m.title.toLowerCase().includes(“rain”) || m.title.toLowerCase().includes(“temperature”) || m.title.toLowerCase().includes(“hurricane”);
+const extraData = isWeather ? (_weatherCache$m$ticke = weatherCache[m.ticker]) === null || _weatherCache$m$ticke === void 0 ? void 0 : _weatherCache$m$ticke.data : null;
+const signal = analyzeMarket(m, config, extraData);
+if (!signal) continue;
+updMetrics({
+evaluated: metrics.evaluated + evaluated,
+signalsFound: metrics.signalsFound + 1
+});
+evaluated = 0;
+const days = daysUntil(m.close_time);
+const price = signal.side === “no” ? m.no_bid : m.yes_bid;
+const cost = kellySize(signal.estWinProb, price, config.kellyFraction, config.maxBetCents, days);
+if (cost < 50) {
+addLog(`Skip ${m.ticker}: bet $${(cost / 100).toFixed(2)} too small`, “info”);
+continue;
 }
-if (evaluated > 0) updMetrics({ evaluated: metrics.evaluated + evaluated });
-if (placed === 0) addLog("No qualifying signals this scan", "info");
-```
-
+addLog(`[${signal.signal}] ${m.title.slice(0, 45)}… | $${(cost / 100).toFixed(2)} | ${signal.label}`, “trade”);
+updMetrics({
+attempted: metrics.attempted + 1,
+bySignal: {
+[signal.signal]: {
+attempted: (((_metrics$bySignal$sig = metrics.bySignal[signal.signal]) === null || _metrics$bySignal$sig === void 0 ? void 0 : _metrics$bySignal$sig.attempted) || 0) + 1
+}
+}
+});
+if (demo || paper) {
+var _metrics$bySignal$sig2, _metrics$bySignal$sig3, _metrics$bySignal$sig4, _metrics$bySignal$sig5, _metrics$bySignal$sig6;
+const sim = simulateTrade(signal, price, cost);
+if (!sim.filled) {
+addLog(`⟳ Limit order not filled — ${m.ticker}`, “info”);
+continue;
+}
+tradedRef.current.add(m.ticker);
+breaker[sim.won ? “recordWin” : “recordLoss”]();
+setBreakerStatus(breaker.status());
+const fee = sim.fee > 0 ? ` (fee -$${(sim.fee / 100).toFixed(2)})` : “”;
+addLog(`${sim.won ? "✓ WIN" : "✗ LOSS"}: ${sim.net >= 0 ? "+" : ""}$${(sim.net / 100).toFixed(2)}${fee} | p=${(sim.trueWinProb * 100).toFixed(0)}%`, sim.won ? “success” : “error”);
+setBalance(b => (b !== null && b !== void 0 ? b : 10000) + sim.net);
+setPnl(p => ({
+…p,
+realized: p.realized + sim.net
+}));
+const sig = signal.signal;
+updMetrics({
+filled: metrics.filled + 1,
+wins: metrics.wins + (sim.won ? 1 : 0),
+losses: metrics.losses + (sim.won ? 0 : 1),
+dollarPlaced: metrics.dollarPlaced + cost,
+dollarEarned: metrics.dollarEarned + sim.net,
+bySignal: {
+[sig]: {
+filled: (((_metrics$bySignal$sig2 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig2 === void 0 ? void 0 : _metrics$bySignal$sig2.filled) || 0) + 1,
+wins: (((_metrics$bySignal$sig3 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig3 === void 0 ? void 0 : _metrics$bySignal$sig3.wins) || 0) + (sim.won ? 1 : 0),
+losses: (((_metrics$bySignal$sig4 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig4 === void 0 ? void 0 : _metrics$bySignal$sig4.losses) || 0) + (sim.won ? 0 : 1),
+placed: (((_metrics$bySignal$sig5 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig5 === void 0 ? void 0 : _metrics$bySignal$sig5.placed) || 0) + cost,
+earned: (((_metrics$bySignal$sig6 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig6 === void 0 ? void 0 : _metrics$bySignal$sig6.earned) || 0) + sim.net
+}
+}
+});
+if (!sim.won) {
+const n = breaker.recordLoss();
+if (n >= config.circuitMaxLosses) checkBreaker();
+}
+placed++;
+} else {
+try {
+await placeOrder(m.ticker, signal.side, Math.max(1, Math.round(cost / 10)), price);
+tradedRef.current.add(m.ticker);
+addLog(`✓ Order placed: ${m.ticker}`, “success”);
+updMetrics({
+filled: metrics.filled + 1,
+attempted: metrics.attempted + 1,
+dollarPlaced: metrics.dollarPlaced + cost
+});
+placed++;
+} catch (e) {
+const errCount = breaker.recordError();
+setBreakerStatus(breaker.status());
+addLog(`✗ Order failed [${errCount} errors]: ${e.message}`, “error”);
+if (checkBreaker()) break;
+}
+}
+}
+if (evaluated > 0) updMetrics({
+evaluated: metrics.evaluated + evaluated
+});
+if (placed === 0) addLog(“No qualifying signals this scan”, “info”);
 }, [autoOn, emergencyStop, stopLossHit, balance, config, markets, weatherCache, demo, paper, metrics, updMetrics, checkBreaker, checkStopLoss, addLog]);
-
 useEffect(() => {
 saveAuto(autoOn);
 if (autoOn && !emergencyStop && !stopLossHit) {
 runScan();
 scanRef.current = setInterval(runScan, config.scanIntervalSec * 1000);
 setCountdown(config.scanIntervalSec);
-cdRef.current = setInterval(() => setCountdown(c => c <= 1 ? config.scanIntervalSec : c-1), 1000);
-} else { clearInterval(scanRef.current); clearInterval(cdRef.current); }
-return () => { clearInterval(scanRef.current); clearInterval(cdRef.current); };
+cdRef.current = setInterval(() => setCountdown(c => c <= 1 ? config.scanIntervalSec : c - 1), 1000);
+} else {
+clearInterval(scanRef.current);
+clearInterval(cdRef.current);
+}
+return () => {
+clearInterval(scanRef.current);
+clearInterval(cdRef.current);
+};
 }, [autoOn, emergencyStop, stopLossHit, config.scanIntervalSec, runScan]);
 
 // Demo market expiry
@@ -647,707 +1120,2132 @@ setMarkets(prev => {
 const live = prev.filter(m => new Date(m.close_time) > new Date());
 if (live.length < prev.length) {
 prev.filter(m => new Date(m.close_time) <= new Date()).forEach(m => tradedRef.current.delete(m.ticker));
-return […live, …mockMarkets().filter(m => !live.some(l => l.ticker === m.ticker)).slice(0, prev.length - live.length)]
-.sort((a,b) => new Date(a.close_time) - new Date(b.close_time));
+return […live, …mockMarkets().filter(m => !live.some(l => l.ticker === m.ticker)).slice(0, prev.length - live.length)].sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
 }
 return prev;
 });
 }, 15000);
 return () => clearInterval(iv);
 }, [demo]);
-
-const eligible = markets
-.filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
-.sort((a,b) => new Date(a.close_time) - new Date(b.close_time));
-const withSig = eligible.map(m => ({
-…m, days: daysUntil(m.close_time),
-signal: analyzeMarket(m, config, weatherCache[m.ticker]?.data),
-}));
-const fmt$  = c => `$${((c||0)/100).toFixed(2)}`;
-const currentBal  = balance ?? config.startBalanceCents;
+const eligible = markets.filter(m => {
+const d = daysUntil(m.close_time);
+return d > 0 && d < config.daysWindow;
+}).sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
+const withSig = eligible.map(m => {
+var _weatherCache$m$ticke2;
+return {
+…m,
+days: daysUntil(m.close_time),
+signal: analyzeMarket(m, config, (_weatherCache$m$ticke2 = weatherCache[m.ticker]) === null || _weatherCache$m$ticke2 === void 0 ? void 0 : _weatherCache$m$ticke2.data)
+};
+});
+const fmt$ = c => `$${((c || 0) / 100).toFixed(2)}`;
+const currentBal = balance !== null && balance !== void 0 ? balance : config.startBalanceCents;
 const dynExposure = Math.min(5000 + Math.floor(Math.max(0, currentBal - config.startBalanceCents) / 10000) * 5000, currentBal * 0.5);
-const winRate = (metrics.wins + metrics.losses) > 0 ? ((metrics.wins / (metrics.wins + metrics.losses)) * 100).toFixed(0) : “–”;
-
-const tabs = [
-{id:“dash”,     icon:“⚡”, label:“Dash”},
-{id:“markets”,  icon:“📊”, label:“Markets”},
-{id:“metrics”,  icon:“📈”, label:“Metrics”},
-{id:“weather”,  icon:“🌤”, label:“Weather”},
-{id:“settings”, icon:“⚙️”, label:“Settings”},
-];
+const winRate = metrics.wins + metrics.losses > 0 ? (metrics.wins / (metrics.wins + metrics.losses) * 100).toFixed(0) : “–”;
+const tabs = [{
+id: “dash”,
+icon: “⚡”,
+label: “Dash”
+}, {
+id: “markets”,
+icon: “📊”,
+label: “Markets”
+}, {
+id: “metrics”,
+icon: “📈”,
+label: “Metrics”
+}, {
+id: “weather”,
+icon: “🌤”,
+label: “Weather”
+}, {
+id: “settings”,
+icon: “⚙️”,
+label: “Settings”
+}];
 
 // LOGIN
-if (screen === “login”) return (
-<div style={S.wrap}>
-<div style={{ …S.card, maxWidth:420 }}>
-<div style={S.logoRow}><span style={S.logoK}>K</span><div>
-<div style={S.logoTitle}>alshi<span style={S.badge(”#00ff88”)}>AUTO</span></div>
-<div style={S.logoSub}>14-day window · Category-filtered · Multi-edge strategy</div>
-</div></div>
-
-```
-    {savedCreds && !err ? (<>
-      <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"14px 16px" }}>
-        <div style={{ fontSize:12, fontWeight:700, color:"#00ff88", marginBottom:4 }}>Welcome back</div>
-        <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>
-          Key: <span style={{color:"#888"}}>{keyId.slice(0,8)}…{keyId.slice(-4)}</span><br/>
-          Proxy: <span style={{color:"#888"}}>{proxyUrl || "none"}</span>
-        </div>
-      </div>
-      <button style={S.btnG} onClick={handleLogin} disabled={loading}>{loading?"Connecting…":"Connect →"}</button>
-      <button style={S.btnGhost} onClick={() => { setSavedCreds(false); setErr(""); }}>Use different credentials</button>
-      {err && <div style={S.errBox}><b>Error</b><br/><span style={{fontSize:11}}>{err}</span></div>}
-      <button style={S.btnGhost} onClick={handleDemo}>🎮 Demo Mode</button>
-    </>) : (<>
-      <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"12px 14px" }}>
-        <div style={{ fontSize:11, fontWeight:700, color:"#00ff88", marginBottom:8 }}>Get your API key from Kalshi</div>
-        <div style={{ fontSize:12, color:"#666", lineHeight:1.7 }}>
-          Go to <a href="https://kalshi.com/account/profile" target="_blank" rel="noreferrer" style={{color:"#00ff88",textDecoration:"none",fontWeight:700}}>kalshi.com → Profile → API Keys</a> and click <strong style={{color:"#ccc"}}>Generate New API Key</strong>. Copy the Key ID and Private Key shown — private key is only shown once.
-        </div>
-      </div>
-      <div style={S.field}><label style={S.lbl}>Key ID</label>
-        <input style={S.inp} type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value={keyId} onChange={e=>setKeyId(e.target.value)} /></div>
-      <div style={S.field}><label style={S.lbl}>Private Key</label>
-        <textarea style={{...S.inp,height:90,resize:"vertical",fontSize:11,lineHeight:1.5}}
-          placeholder={"-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"} value={pemText} onChange={e=>setPemText(e.target.value)} /></div>
-      {err && <div style={S.errBox}><b>Error</b><br/><span style={{fontSize:11}}>{err}</span>
-        {(err.includes("401")||err.includes("403")) && <div style={{marginTop:6,fontSize:11,color:"#ff9966"}}>💡 Generate a fresh key pair on kalshi.com → Profile → API Keys</div>}
-      </div>}
-      <button style={{...S.btnG, opacity:(keyId&&pemText)?1:0.45}} onClick={handleLogin} disabled={loading||!keyId||!pemText}>{loading?"Connecting…":"Connect →"}</button>
-      <ProxyField proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} />
-      <button style={S.btnGhost} onClick={handleDemo}>🎮 Demo Mode (no account needed)</button>
-      <p style={S.fine}>Real-money trading tool — only trade what you can afford to lose.</p>
-    </>)}
-  </div>
-</div>
-```
-
-);
+if (screen === “login”) return /*#**PURE***/React.createElement(“div”, {
+style: S.wrap
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+…S.card,
+maxWidth: 420
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: S.logoRow
+}, /*#**PURE***/React.createElement(“span”, {
+style: S.logoK
+}, “K”), /*#**PURE***/React.createElement(“div”, null, /*#**PURE***/React.createElement(“div”, {
+style: S.logoTitle
+}, “alshi”, /*#**PURE***/React.createElement(“span”, {
+style: S.badge(”#00ff88”)
+}, “AUTO”)), /*#**PURE***/React.createElement(“div”, {
+style: S.logoSub
+}, “14-day window \xB7 Category-filtered \xB7 Multi-edge strategy”))), savedCreds && !err ? /*#**PURE***/React.createElement(React.Fragment, null, /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a1a0f”,
+border: “1px solid #00ff8820”,
+borderRadius: 10,
+padding: “14px 16px”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 12,
+fontWeight: 700,
+color: “#00ff88”,
+marginBottom: 4
+}
+}, “Welcome back”), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 11,
+color: “#555”,
+lineHeight: 1.6
+}
+}, “Key: “, /*#**PURE***/React.createElement(“span”, {
+style: {
+color: “#888”
+}
+}, keyId.slice(0, 8), “\u2026”, keyId.slice(-4)), /*#**PURE***/React.createElement(“br”, null), “Proxy: “, /*#**PURE***/React.createElement(“span”, {
+style: {
+color: “#888”
+}
+}, proxyUrl || “none”))), /*#**PURE***/React.createElement(“button”, {
+style: S.btnG,
+onClick: handleLogin,
+disabled: loading
+}, loading ? “Connecting…” : “Connect →”), /*#**PURE***/React.createElement(“button”, {
+style: S.btnGhost,
+onClick: () => {
+setSavedCreds(false);
+setErr(””);
+}
+}, “Use different credentials”), err && /*#**PURE***/React.createElement(“div”, {
+style: S.errBox
+}, /*#**PURE***/React.createElement(“b”, null, “Error”), /*#**PURE***/React.createElement(“br”, null), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11
+}
+}, err)), /*#**PURE***/React.createElement(“button”, {
+style: S.btnGhost,
+onClick: handleDemo
+}, “\uD83C\uDFAE Demo Mode”)) : /*#**PURE***/React.createElement(React.Fragment, null, /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a1a0f”,
+border: “1px solid #00ff8820”,
+borderRadius: 10,
+padding: “12px 14px”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 11,
+fontWeight: 700,
+color: “#00ff88”,
+marginBottom: 8
+}
+}, “Get your API key from Kalshi”), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 12,
+color: “#666”,
+lineHeight: 1.7
+}
+}, “Go to “, /*#**PURE***/React.createElement(“a”, {
+href: “https://kalshi.com/account/profile”,
+target: “_blank”,
+rel: “noreferrer”,
+style: {
+color: “#00ff88”,
+textDecoration: “none”,
+fontWeight: 700
+}
+}, “kalshi.com \u2192 Profile \u2192 API Keys”), “ and click “, /*#**PURE***/React.createElement(“strong”, {
+style: {
+color: “#ccc”
+}
+}, “Generate New API Key”), “. Copy the Key ID and Private Key shown \u2014 private key is only shown once.”)), /*#**PURE***/React.createElement(“div”, {
+style: S.field
+}, /*#**PURE***/React.createElement(“label”, {
+style: S.lbl
+}, “Key ID”), /*#**PURE***/React.createElement(“input”, {
+style: S.inp,
+type: “text”,
+placeholder: “xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx”,
+value: keyId,
+onChange: e => setKeyId(e.target.value)
+})), /*#**PURE***/React.createElement(“div”, {
+style: S.field
+}, /*#**PURE***/React.createElement(“label”, {
+style: S.lbl
+}, “Private Key”), /*#**PURE***/React.createElement(“textarea”, {
+style: {
+…S.inp,
+height: 90,
+resize: “vertical”,
+fontSize: 11,
+lineHeight: 1.5
+},
+placeholder: “—–BEGIN RSA PRIVATE KEY—–\n…\n—–END RSA PRIVATE KEY—–”,
+value: pemText,
+onChange: e => setPemText(e.target.value)
+})), err && /*#**PURE***/React.createElement(“div”, {
+style: S.errBox
+}, /*#**PURE***/React.createElement(“b”, null, “Error”), /*#**PURE***/React.createElement(“br”, null), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11
+}
+}, err), (err.includes(“401”) || err.includes(“403”)) && /*#**PURE***/React.createElement(“div”, {
+style: {
+marginTop: 6,
+fontSize: 11,
+color: “#ff9966”
+}
+}, “\uD83D\uDCA1 Generate a fresh key pair on kalshi.com \u2192 Profile \u2192 API Keys”)), /*#**PURE***/React.createElement(“button”, {
+style: {
+…S.btnG,
+opacity: keyId && pemText ? 1 : 0.45
+},
+onClick: handleLogin,
+disabled: loading || !keyId || !pemText
+}, loading ? “Connecting…” : “Connect →”), /*#**PURE***/React.createElement(ProxyField, {
+proxyUrl: proxyUrl,
+setProxyUrl: setProxyUrl
+}), /*#**PURE***/React.createElement(“button”, {
+style: S.btnGhost,
+onClick: handleDemo
+}, “\uD83C\uDFAE Demo Mode (no account needed)”), /*#**PURE***/React.createElement(“p”, {
+style: S.fine
+}, “Real-money trading tool \u2014 only trade what you can afford to lose.”))));
 
 // CORS ERROR
-if (screen === “corserror”) return (
-<div style={S.wrap}><div style={{...S.card,gap:14}}>
-<div style={{fontSize:28,textAlign:“center”}}>🚧</div>
-<div style={{fontSize:15,fontWeight:800,textAlign:“center”}}>Browser Blocked the Request</div>
-<div style={{fontSize:12,color:”#555”,lineHeight:1.6,textAlign:“center”}}>Kalshi’s API blocks direct browser calls. You need the free Cloudflare Worker proxy.</div>
-<SetupGuide expanded />
-<button style={S.btnG} onClick={() => setScreen(“login”)}>← Back</button>
-</div></div>
-);
+if (screen === “corserror”) return /*#**PURE***/React.createElement(“div”, {
+style: S.wrap
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+…S.card,
+gap: 14
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 28,
+textAlign: “center”
+}
+}, “\uD83D\uDEA7”), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 15,
+fontWeight: 800,
+textAlign: “center”
+}
+}, “Browser Blocked the Request”), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 12,
+color: “#555”,
+lineHeight: 1.6,
+textAlign: “center”
+}
+}, “Kalshi’s API blocks direct browser calls. You need the free Cloudflare Worker proxy.”), /*#**PURE***/React.createElement(SetupGuide, {
+expanded: true
+}), /*#**PURE***/React.createElement(“button”, {
+style: S.btnG,
+onClick: () => setScreen(“login”)
+}, “\u2190 Back”)));
 
 // MODE SELECT
-if (screen === “modeselect”) return (
-<div style={S.wrap}><div style={{...S.card,gap:16}}>
-<div style={S.logoRow}><span style={S.logoK}>K</span><div>
-<div style={S.logoTitle}>alshi<span style={S.badge(”#00ff88”)}>AUTO</span></div>
-<div style={S.logoSub}>Connected ✓ — choose trading mode</div>
-</div></div>
-
-```
-  <div style={{background:"#0a1a0f",border:"2px solid #00ff8833",borderRadius:14,padding:18,cursor:"pointer"}} onClick={handlePaper}>
-    <div style={{fontSize:15,fontWeight:800,color:"#00ff88",marginBottom:6}}>📊 Paper Trading</div>
-    <div style={{display:"flex",flexDirection:"column",gap:5}}>
-      {["✓ Real Kalshi markets — 100s of live non-sports markets","✓ $100 virtual balance — zero real money at risk","✓ Realistic simulation: fees, fill rate, edge realization","✓ Run this for 1-2 days before going live — recommended"].map(t=>(
-        <span key={t} style={{fontSize:11,color:"#555"}}>{t}</span>
-      ))}
-    </div>
-    <button style={{...S.btnG,marginTop:12,width:"100%"}}>Start Paper Trading →</button>
-  </div>
-
-  <div style={{background:"#1a0a0a",border:"2px solid #ff3b3033",borderRadius:14,padding:18,cursor:"pointer"}} onClick={handleLive}>
-    <div style={{fontSize:15,fontWeight:800,color:"#ff6b6b",marginBottom:6}}>⚡ Live Trading</div>
-    <div style={{display:"flex",flexDirection:"column",gap:5}}>
-      {["⚠ Real orders placed on your Kalshi account","⚠ $100 starting balance, $50 max exposure","⚠ Emergency stop available at all times"].map(t=>(
-        <span key={t} style={{fontSize:11,color:"#663333"}}>{t}</span>
-      ))}
-    </div>
-    <button style={{...S.btnGhost,marginTop:12,width:"100%",color:"#ff6b6b",borderColor:"#ff3b3033"}}>Go Live</button>
-  </div>
-  <button style={{...S.btnGhost,fontSize:12}} onClick={() => { _keyId=""; _key=null; setScreen("login"); }}>← Back</button>
-</div></div>
-```
-
-);
+if (screen === “modeselect”) return /*#**PURE***/React.createElement(“div”, {
+style: S.wrap
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+…S.card,
+gap: 16
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: S.logoRow
+}, /*#**PURE***/React.createElement(“span”, {
+style: S.logoK
+}, “K”), /*#**PURE***/React.createElement(“div”, null, /*#**PURE***/React.createElement(“div”, {
+style: S.logoTitle
+}, “alshi”, /*#**PURE***/React.createElement(“span”, {
+style: S.badge(”#00ff88”)
+}, “AUTO”)), /*#**PURE***/React.createElement(“div”, {
+style: S.logoSub
+}, “Connected \u2713 \u2014 choose trading mode”))), /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a1a0f”,
+border: “2px solid #00ff8833”,
+borderRadius: 14,
+padding: 18,
+cursor: “pointer”
+},
+onClick: handlePaper
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 15,
+fontWeight: 800,
+color: “#00ff88”,
+marginBottom: 6
+}
+}, “\uD83D\uDCCA Paper Trading”), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+flexDirection: “column”,
+gap: 5
+}
+}, [“✓ Real Kalshi markets — 100s of live non-sports markets”, “✓ $100 virtual balance — zero real money at risk”, “✓ Realistic simulation: fees, fill rate, edge realization”, “✓ Run this for 1-2 days before going live — recommended”].map(t => /*#**PURE***/React.createElement(“span”, {
+key: t,
+style: {
+fontSize: 11,
+color: “#555”
+}
+}, t))), /*#**PURE***/React.createElement(“button”, {
+style: {
+…S.btnG,
+marginTop: 12,
+width: “100%”
+}
+}, “Start Paper Trading \u2192”)), /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#1a0a0a”,
+border: “2px solid #ff3b3033”,
+borderRadius: 14,
+padding: 18,
+cursor: “pointer”
+},
+onClick: handleLive
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 15,
+fontWeight: 800,
+color: “#ff6b6b”,
+marginBottom: 6
+}
+}, “\u26A1 Live Trading”), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+flexDirection: “column”,
+gap: 5
+}
+}, [“⚠ Real orders placed on your Kalshi account”, “⚠ $100 starting balance, $50 max exposure”, “⚠ Emergency stop available at all times”].map(t => /*#**PURE***/React.createElement(“span”, {
+key: t,
+style: {
+fontSize: 11,
+color: “#663333”
+}
+}, t))), /*#**PURE***/React.createElement(“button”, {
+style: {
+…S.btnGhost,
+marginTop: 12,
+width: “100%”,
+color: “#ff6b6b”,
+borderColor: “#ff3b3033”
+}
+}, “Go Live”)), /*#**PURE***/React.createElement(“button”, {
+style: {
+…S.btnGhost,
+fontSize: 12
+},
+onClick: () => {
+_keyId = “”;
+_key = null;
+setScreen(“login”);
+}
+}, “\u2190 Back”)));
 
 // MAIN SHELL
-return (
-<div style={S.shell}>
-{/* Emergency Stop Banner */}
-{emergencyStop && (
-<div style={{background:”#ff3b30”,padding:“10px 16px”,display:“flex”,alignItems:“center”,justifyContent:“space-between”,flexShrink:0}}>
-<span style={{fontSize:12,fontWeight:800,color:”#fff”}}>🛑 EMERGENCY STOP — ALL TRADING HALTED</span>
-<button style={{background:”#fff”,color:”#ff3b30”,border:“none”,borderRadius:6,padding:“4px 12px”,fontSize:11,fontWeight:800,cursor:“pointer”}}
-onClick={() => { setEStop(false); breaker.reset(); setBreakerStatus(breaker.status()); addLog(“Emergency stop cleared — trading re-enabled”, “warn”); }}>
-Clear
-</button>
-</div>
-)}
-
-```
-  <div style={S.hdr}>
-    <div style={{display:"flex",alignItems:"center",gap:7}}>
-      <span style={{fontSize:16,fontWeight:900}}>K<span style={{color:"#00ff88"}}>AUTO</span></span>
-      {demo && <Tag col="#f5a623">DEMO</Tag>}
-      {paper && !demo && <Tag col="#00ff88">PAPER</Tag>}
-      {!demo && !paper && <Tag col="#ff6b6b">LIVE</Tag>}
-      <Tag col="#00ff8888">≤{config.daysWindow}d</Tag>
-    </div>
-    <div style={{display:"flex",alignItems:"center",gap:8}}>
-      <span style={{fontSize:11,color:"#555"}}>{fmt$(currentBal)}</span>
-      {/* Emergency Stop Button */}
-      <button onClick={() => setEStop(!emergencyStop)} style={{
-        background: emergencyStop ? "#333" : "#ff3b30", color:"#fff", border:"none", borderRadius:6,
-        padding:"3px 10px", fontSize:10, fontWeight:800, cursor:"pointer", fontFamily:"inherit",
-      }}>
-        {emergencyStop ? "STOPPED" : "🛑 STOP"}
-      </button>
-      <div style={{width:8,height:8,borderRadius:"50%",background:autoOn&&!emergencyStop?"#00ff88":"#1a1a1a",boxShadow:autoOn&&!emergencyStop?"0 0 8px #00ff88":"none"}} />
-    </div>
-  </div>
-
-  <div style={{flex:1,overflow:"auto"}}>
-    {screen==="dash"     && <DashScreen {...{pnl,withSig,eligible,autoOn,setAutoOn,emergencyStop,setEStop,stopLossHit,setStopLossHit,log,countdown,fmt$,config,dynExposure,currentBal,winRate,metrics,breakerStatus,breaker,setBreakerStatus}} />}
-    {screen==="markets"  && <MarketsScreen {...{markets:withSig,fmt$,addLog,demo,paper,config,weatherCache,fetchWeather,tradedRef,setPnl,setBalance,updMetrics,metrics}} />}
-    {screen==="metrics"  && <MetricsScreen {...{metrics,winRate,fmt$,pnl,config,resetMetrics:()=>{setMetrics(initMetrics());saveMetrics(initMetrics());}}} />}
-    {screen==="weather"  && <WeatherScreen {...{markets:withSig,weatherCache,fetchWeather,config}} />}
-    {screen==="settings" && <SettingsScreen {...{config,setConfig,fmt$,paper,demo,onLogout:()=>{_keyId="";_key=null;clearCreds();setPaper(false);setDemo(false);setAutoOn(false);setScreen("login");}}} />}
-  </div>
-
-  <div style={S.nav}>
-    {tabs.map(t => (
-      <button key={t.id} style={{...S.navBtn,...(screen===t.id?{color:"#00ff88"}:{})}} onClick={()=>setScreen(t.id)}>
-        <span style={{fontSize:16}}>{t.icon}</span>
-        <span style={{fontSize:8}}>{t.label}</span>
-      </button>
-    ))}
-  </div>
-</div>
-```
-
-);
+return /*#**PURE***/React.createElement(“div”, {
+style: S.shell
+}, emergencyStop && /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#ff3b30”,
+padding: “10px 16px”,
+display: “flex”,
+alignItems: “center”,
+justifyContent: “space-between”,
+flexShrink: 0
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 12,
+fontWeight: 800,
+color: “#fff”
+}
+}, “\uD83D\uDED1 EMERGENCY STOP \u2014 ALL TRADING HALTED”), /*#**PURE***/React.createElement(“button”, {
+style: {
+background: “#fff”,
+color: “#ff3b30”,
+border: “none”,
+borderRadius: 6,
+padding: “4px 12px”,
+fontSize: 11,
+fontWeight: 800,
+cursor: “pointer”
+},
+onClick: () => {
+setEStop(false);
+breaker.reset();
+setBreakerStatus(breaker.status());
+addLog(“Emergency stop cleared — trading re-enabled”, “warn”);
+}
+}, “Clear”)), /*#**PURE***/React.createElement(“div”, {
+style: S.hdr
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+alignItems: “center”,
+gap: 7
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 16,
+fontWeight: 900
+}
+}, “K”, /*#**PURE***/React.createElement(“span”, {
+style: {
+color: “#00ff88”
+}
+}, “AUTO”)), demo && /*#**PURE***/React.createElement(Tag, {
+col: “#f5a623”
+}, “DEMO”), paper && !demo && /*#**PURE***/React.createElement(Tag, {
+col: “#00ff88”
+}, “PAPER”), !demo && !paper && /*#**PURE***/React.createElement(Tag, {
+col: “#ff6b6b”
+}, “LIVE”), /*#**PURE***/React.createElement(Tag, {
+col: “#00ff8888”
+}, “\u2264”, config.daysWindow, “d”)), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+alignItems: “center”,
+gap: 8
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+color: “#555”
+}
+}, fmt$(currentBal)), /*#**PURE***/React.createElement(“button”, {
+onClick: () => setEStop(!emergencyStop),
+style: {
+background: emergencyStop ? “#333” : “#ff3b30”,
+color: “#fff”,
+border: “none”,
+borderRadius: 6,
+padding: “3px 10px”,
+fontSize: 10,
+fontWeight: 800,
+cursor: “pointer”,
+fontFamily: “inherit”
+}
+}, emergencyStop ? “STOPPED” : “🛑 STOP”), /*#**PURE***/React.createElement(“div”, {
+style: {
+width: 8,
+height: 8,
+borderRadius: “50%”,
+background: autoOn && !emergencyStop ? “#00ff88” : “#1a1a1a”,
+boxShadow: autoOn && !emergencyStop ? “0 0 8px #00ff88” : “none”
+}
+}))), /*#**PURE***/React.createElement(“div”, {
+style: {
+flex: 1,
+overflow: “auto”
+}
+}, screen === “dash” && /*#**PURE***/React.createElement(DashScreen, {
+pnl,
+withSig,
+eligible,
+autoOn,
+setAutoOn,
+emergencyStop,
+setEStop,
+stopLossHit,
+setStopLossHit,
+log,
+countdown,
+fmt$,
+config,
+dynExposure,
+currentBal,
+winRate,
+metrics,
+breakerStatus,
+breaker,
+setBreakerStatus
+}), screen === “markets” && /*#**PURE***/React.createElement(MarketsScreen, {
+markets: withSig,
+fmt$,
+addLog,
+demo,
+paper,
+config,
+weatherCache,
+fetchWeather,
+tradedRef,
+setPnl,
+setBalance,
+updMetrics,
+metrics
+}), screen === “metrics” && /*#**PURE***/React.createElement(MetricsScreen, {
+metrics,
+winRate,
+fmt$,
+pnl,
+config,
+resetMetrics: () => {
+setMetrics(initMetrics());
+saveMetrics(initMetrics());
+}
+}), screen === “weather” && /*#**PURE***/React.createElement(WeatherScreen, {
+markets: withSig,
+weatherCache,
+fetchWeather,
+config
+}), screen === “settings” && /*#**PURE***/React.createElement(SettingsScreen, {
+config,
+setConfig,
+fmt$,
+paper,
+demo,
+onLogout: () => {
+_keyId = “”;
+_key = null;
+clearCreds();
+setPaper(false);
+setDemo(false);
+setAutoOn(false);
+setScreen(“login”);
+}
+})), /*#**PURE***/React.createElement(“div”, {
+style: S.nav
+}, tabs.map(t => /*#**PURE***/React.createElement(“button”, {
+key: t.id,
+style: {
+…S.navBtn,
+…(screen === t.id ? {
+color: “#00ff88”
+} : {})
+},
+onClick: () => setScreen(t.id)
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 16
+}
+}, t.icon), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 8
+}
+}, t.label)))));
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-function Tag({col,children}) {
-return <span style={{fontSize:8,fontWeight:700,color:col,background:col+“15”,border:`1px solid ${col}30`,borderRadius:3,padding:“2px 5px”}}>{children}</span>;
+function Tag(_ref7) {
+let {
+col,
+children
+} = _ref7;
+return /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 8,
+fontWeight: 700,
+color: col,
+background: col + “15”,
+border: `1px solid ${col}30`,
+borderRadius: 3,
+padding: “2px 5px”
 }
-function UBadge({days}) {
-const [col,txt] = days<0.5?[”#ff3b30”,“⚡TODAY”]:days<1?[”#ff6b6b”,`${(days*24).toFixed(0)}h`]:days<2?[”#f5a623”,`~${days.toFixed(1)}d`]:[”#444”,`${days.toFixed(1)}d`];
-return <span style={{fontSize:9,fontWeight:700,color:col,background:col+“15”,borderRadius:4,padding:“2px 6px”,flexShrink:0}}>{txt}</span>;
+}, children);
 }
-function CatBadge({cat}) {
-const colors = {economics:”#f5a623”,politics:”#60a5fa”,crypto:”#a78bfa”,financials:”#34d399”,
-climate:”#4ade80”,tech:”#38bdf8”,weather:”#93c5fd”,companies:”#fb923c”,elections:”#f472b6”,culture:”#e879f9”};
-const c = colors[(cat||””).toLowerCase()] || “#666”;
-return <span style={{fontSize:8,color:c,background:c+“15”,borderRadius:3,padding:“1px 5px”,fontWeight:600}}>{(cat||“other”).toUpperCase()}</span>;
+function UBadge(_ref8) {
+let {
+days
+} = _ref8;
+const [col, txt] = days < 0.5 ? [”#ff3b30”, “⚡TODAY”] : days < 1 ? [”#ff6b6b”, `${(days * 24).toFixed(0)}h`] : days < 2 ? [”#f5a623”, `~${days.toFixed(1)}d`] : [”#444”, `${days.toFixed(1)}d`];
+return /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 9,
+fontWeight: 700,
+color: col,
+background: col + “15”,
+borderRadius: 4,
+padding: “2px 6px”,
+flexShrink: 0
+}
+}, txt);
+}
+function CatBadge(_ref9) {
+let {
+cat
+} = _ref9;
+const colors = {
+economics: “#f5a623”,
+politics: “#60a5fa”,
+crypto: “#a78bfa”,
+financials: “#34d399”,
+climate: “#4ade80”,
+tech: “#38bdf8”,
+weather: “#93c5fd”,
+companies: “#fb923c”,
+elections: “#f472b6”,
+culture: “#e879f9”
+};
+const c = colors[(cat || “”).toLowerCase()] || “#666”;
+return /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 8,
+color: c,
+background: c + “15”,
+borderRadius: 3,
+padding: “1px 5px”,
+fontWeight: 600
+}
+}, (cat || “other”).toUpperCase());
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-function DashScreen({pnl,withSig,eligible,autoOn,setAutoOn,emergencyStop,setEStop,stopLossHit,setStopLossHit,log,countdown,fmt$,config,dynExposure,currentBal,winRate,metrics,breakerStatus,breaker,setBreakerStatus}) {
+function DashScreen(_ref0) {
+let {
+pnl,
+withSig,
+eligible,
+autoOn,
+setAutoOn,
+emergencyStop,
+setEStop,
+stopLossHit,
+setStopLossHit,
+log,
+countdown,
+fmt$,
+config,
+dynExposure,
+currentBal,
+winRate,
+metrics,
+breakerStatus,
+breaker,
+setBreakerStatus
+} = _ref0;
 const total = pnl.realized;
 const gainPct = ((currentBal - config.startBalanceCents) / config.startBalanceCents * 100).toFixed(1);
 const topSigs = withSig.filter(m => m.signal).slice(0, 4);
-
-return (
-<div style={S.page}>
-{/* P&L */}
-<div style={S.pnlCard}>
-<div style={{display:“flex”,justifyContent:“space-between”,alignItems:“flex-start”}}>
-<div>
-<div style={{fontSize:9,color:”#333”,textTransform:“uppercase”,letterSpacing:2,marginBottom:6}}>Session P&L</div>
-<div style={{fontSize:38,fontWeight:900,color:total>=0?”#00ff88”:”#ff6b6b”,lineHeight:1}}>
-{total>=0?”+”:””}{fmt$(Math.abs(total))}
-</div>
-</div>
-<div style={{textAlign:“right”}}>
-<div style={{fontSize:10,color:”#555”}}>Account</div>
-<div style={{fontSize:18,fontWeight:700}}>{fmt$(currentBal)}</div>
-<div style={{fontSize:11,color:total>=0?”#00ff88”:”#ff6b6b”}}>{gainPct>=0?”+”:””}{gainPct}%</div>
-</div>
-</div>
-<div style={{display:“flex”,gap:12,marginTop:6,flexWrap:“wrap”}}>
-{[[“Evaluated”,metrics.evaluated,”#aaa”],[“Placed”,metrics.filled,”#00ff88”],[“Win Rate”,winRate===”–”?”–”:winRate+”%”,”#00ff88”],[“Net”,fmt$(metrics.dollarEarned),metrics.dollarEarned>=0?”#00ff88”:”#ff6b6b”]].map(([l,v,c])=>(
-<span key={l} style={{fontSize:11,color:”#555”}}>{l} <span style={{color:c,fontWeight:700}}>{v}</span></span>
-))}
-</div>
-</div>
-
-```
-  {/* Circuit breaker warning */}
-  {(breakerStatus.errors > 0 || breakerStatus.consecLosses > 2) && (
-    <div style={{background:"#1a0a00",border:"1px solid #f5a62333",borderRadius:10,padding:"10px 14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-      <span style={{fontSize:11,color:"#f5a623"}}>⚠ Circuit: {breakerStatus.errors} errors · {breakerStatus.consecLosses} consecutive losses</span>
-      <button style={{fontSize:10,color:"#f5a623",background:"transparent",border:"1px solid #f5a62333",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}
-        onClick={() => { breaker.reset(); setBreakerStatus(breaker.status()); }}>Reset</button>
-    </div>
-  )}
-
-  {/* Auto + Emergency controls */}
-  <div style={{background:"#0a0f14",border:`1px solid ${emergencyStop?"#ff3b3033":"#1a2230"}`,borderRadius:12,padding:"13px 16px"}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-      <div>
-        <div style={{fontSize:13,fontWeight:700}}>
-          Auto-Trade <span style={{fontSize:10,color:autoOn&&!emergencyStop?"#00ff88":"#444"}}>{autoOn&&!emergencyStop?`● LIVE — ${countdown}s`:"○ OFF"}</span>
-        </div>
-        <div style={{fontSize:10,color:"#444",marginTop:2}}>{eligible.length} markets · sorts by soonest expiry · {config.maxTradesPerScan} max/scan</div>
-      </div>
-      <div style={{...S.toggle,background:autoOn&&!emergencyStop?"#00ff88":"#111",border:`1px solid ${autoOn&&!emergencyStop?"#00ff88":"#222"}`}}
-        onClick={() => { if (!emergencyStop) setAutoOn(!autoOn); }}>
-        <div style={{...S.thumb,transform:autoOn&&!emergencyStop?"translateX(22px)":"translateX(2px)"}} />
-      </div>
-    </div>
-    <button onClick={() => setEStop(!emergencyStop)} style={{
-      width:"100%",padding:"10px",borderRadius:8,fontWeight:800,fontSize:12,cursor:"pointer",fontFamily:"inherit",
-      background:emergencyStop?"#1a3a1a":"#2a0505",color:emergencyStop?"#00ff88":"#ff3b30",
-      border:`2px solid ${emergencyStop?"#00ff8844":"#ff3b3066"}`,
-    }}>
-      {emergencyStop ? "✓ Trading Halted — Tap to Resume" : "🛑 Emergency Stop — Immediately halt all trading"}
-    </button>
-  </div>
-
-  {/* Stats */}
-  <div style={{display:"flex",gap:8}}>
-    {[[eligible.length,"Markets","#fff"],[withSig.filter(m=>m.signal).length,"Signals","#00ff88"],[fmt$(dynExposure),"Exposure","#f5a623"],[fmt$(config.startBalanceCents*config.stopLossPct),"Stop-loss","#ff6b6b"]].map(([n,l,c])=>(
-      <div key={l} style={{flex:1,background:"#0a0f14",border:"1px solid #1a2230",borderRadius:10,padding:"10px 6px",textAlign:"center"}}>
-        <div style={{fontSize:n.toString().length>5?13:18,fontWeight:900,color:c}}>{n}</div>
-        <div style={{fontSize:7,color:"#333",textTransform:"uppercase",marginTop:2}}>{l}</div>
-      </div>
-    ))}
-  </div>
-
-  {/* Top signals */}
-  {topSigs.length > 0 && <>
-    <div style={S.secH}>🔥 Live Signals — soonest expiry first</div>
-    {topSigs.map(m => (
-      <div key={m.ticker} style={{background:"#0a0f14",borderLeft:`3px solid ${m.signal.color}`,border:"1px solid #1a2230",borderRadius:10,padding:"12px 14px"}}>
-        <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:6}}>
-          <span style={{fontSize:12,color:"#ccc",flex:1,lineHeight:1.4}}>{m.title}</span>
-          <UBadge days={m.days} />
-        </div>
-        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          <CatBadge cat={m.category} />
-          <span style={{fontSize:10,fontWeight:700,color:m.signal.color,background:m.signal.color+"11",border:`1px solid ${m.signal.color}33`,borderRadius:4,padding:"2px 7px"}}>{m.signal.label}</span>
-          <span style={{fontSize:9,color:"#444"}}>{m.signal.why}</span>
-        </div>
-      </div>
-    ))}
-  </>}
-
-  {/* Log */}
-  <div style={S.secH}>Activity Log</div>
-  <div style={{background:"#050709",border:"1px solid #0f1520",borderRadius:10,padding:"10px 12px",maxHeight:200,overflowY:"auto"}}>
-    {log.length===0 && <div style={{color:"#222",fontSize:12,textAlign:"center",padding:16}}>No activity yet</div>}
-    {log.slice(0,60).map((l,i) => (
-      <div key={i} style={{fontSize:10,lineHeight:1.9,fontFamily:"monospace",color:{error:"#ff6b6b",success:"#00ff88",warn:"#f5a623",trade:"#88aaff"}[l.type]||"#444"}}>
-        <span style={{color:"#222",marginRight:6}}>{l.ts}</span>{l.msg}
-      </div>
-    ))}
-  </div>
-</div>
-```
-
-);
+return /*#**PURE***/React.createElement(“div”, {
+style: S.page
+}, /*#**PURE***/React.createElement(“div”, {
+style: S.pnlCard
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+justifyContent: “space-between”,
+alignItems: “flex-start”
+}
+}, /*#**PURE***/React.createElement(“div”, null, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 9,
+color: “#333”,
+textTransform: “uppercase”,
+letterSpacing: 2,
+marginBottom: 6
+}
+}, “Session P&L”), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 38,
+fontWeight: 900,
+color: total >= 0 ? “#00ff88” : “#ff6b6b”,
+lineHeight: 1
+}
+}, total >= 0 ? “+” : “”, fmt$(Math.abs(total)))), /*#**PURE***/React.createElement(“div”, {
+style: {
+textAlign: “right”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 10,
+color: “#555”
+}
+}, “Account”), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 18,
+fontWeight: 700
+}
+}, fmt$(currentBal)), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 11,
+color: total >= 0 ? “#00ff88” : “#ff6b6b”
+}
+}, gainPct >= 0 ? “+” : “”, gainPct, “%”))), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 12,
+marginTop: 6,
+flexWrap: “wrap”
+}
+}, [[“Evaluated”, metrics.evaluated, “#aaa”], [“Placed”, metrics.filled, “#00ff88”], [“Win Rate”, winRate === “–” ? “–” : winRate + “%”, “#00ff88”], [“Net”, fmt$(metrics.dollarEarned), metrics.dollarEarned >= 0 ? “#00ff88” : “#ff6b6b”]].map(_ref1 => {
+let [l, v, c] = _ref1;
+return /*#**PURE***/React.createElement(“span”, {
+key: l,
+style: {
+fontSize: 11,
+color: “#555”
+}
+}, l, “ “, /*#**PURE***/React.createElement(“span”, {
+style: {
+color: c,
+fontWeight: 700
+}
+}, v));
+}))), (breakerStatus.errors > 0 || breakerStatus.consecLosses > 2) && /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#1a0a00”,
+border: “1px solid #f5a62333”,
+borderRadius: 10,
+padding: “10px 14px”,
+display: “flex”,
+justifyContent: “space-between”,
+alignItems: “center”
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+color: “#f5a623”
+}
+}, “\u26A0 Circuit: “, breakerStatus.errors, “ errors \xB7 “, breakerStatus.consecLosses, “ consecutive losses”), /*#**PURE***/React.createElement(“button”, {
+style: {
+fontSize: 10,
+color: “#f5a623”,
+background: “transparent”,
+border: “1px solid #f5a62333”,
+borderRadius: 5,
+padding: “3px 8px”,
+cursor: “pointer”,
+fontFamily: “inherit”
+},
+onClick: () => {
+breaker.reset();
+setBreakerStatus(breaker.status());
+}
+}, “Reset”)), /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a0f14”,
+border: `1px solid ${emergencyStop ? "#ff3b3033" : "#1a2230"}`,
+borderRadius: 12,
+padding: “13px 16px”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+alignItems: “center”,
+justifyContent: “space-between”,
+marginBottom: 8
+}
+}, /*#**PURE***/React.createElement(“div”, null, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 13,
+fontWeight: 700
+}
+}, “Auto-Trade “, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 10,
+color: autoOn && !emergencyStop ? “#00ff88” : “#444”
+}
+}, autoOn && !emergencyStop ? `● LIVE — ${countdown}s` : “○ OFF”)), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 10,
+color: “#444”,
+marginTop: 2
+}
+}, eligible.length, “ markets \xB7 sorts by soonest expiry \xB7 “, config.maxTradesPerScan, “ max/scan”)), /*#**PURE***/React.createElement(“div”, {
+style: {
+…S.toggle,
+background: autoOn && !emergencyStop ? “#00ff88” : “#111”,
+border: `1px solid ${autoOn && !emergencyStop ? "#00ff88" : "#222"}`
+},
+onClick: () => {
+if (!emergencyStop) setAutoOn(!autoOn);
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+…S.thumb,
+transform: autoOn && !emergencyStop ? “translateX(22px)” : “translateX(2px)”
+}
+}))), /*#**PURE***/React.createElement(“button”, {
+onClick: () => setEStop(!emergencyStop),
+style: {
+width: “100%”,
+padding: “10px”,
+borderRadius: 8,
+fontWeight: 800,
+fontSize: 12,
+cursor: “pointer”,
+fontFamily: “inherit”,
+background: emergencyStop ? “#1a3a1a” : “#2a0505”,
+color: emergencyStop ? “#00ff88” : “#ff3b30”,
+border: `2px solid ${emergencyStop ? "#00ff8844" : "#ff3b3066"}`
+}
+}, emergencyStop ? “✓ Trading Halted — Tap to Resume” : “🛑 Emergency Stop — Immediately halt all trading”)), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 8
+}
+}, [[eligible.length, “Markets”, “#fff”], [withSig.filter(m => m.signal).length, “Signals”, “#00ff88”], [fmt$(dynExposure), “Exposure”, “#f5a623”], [fmt$(config.startBalanceCents * config.stopLossPct), “Stop-loss”, “#ff6b6b”]].map(_ref10 => {
+let [n, l, c] = _ref10;
+return /*#**PURE***/React.createElement(“div”, {
+key: l,
+style: {
+flex: 1,
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderRadius: 10,
+padding: “10px 6px”,
+textAlign: “center”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: n.toString().length > 5 ? 13 : 18,
+fontWeight: 900,
+color: c
+}
+}, n), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 7,
+color: “#333”,
+textTransform: “uppercase”,
+marginTop: 2
+}
+}, l));
+})), topSigs.length > 0 && /*#**PURE***/React.createElement(React.Fragment, null, /*#**PURE***/React.createElement(“div”, {
+style: S.secH
+}, “\uD83D\uDD25 Live Signals \u2014 soonest expiry first”), topSigs.map(m => /*#**PURE***/React.createElement(“div”, {
+key: m.ticker,
+style: {
+background: “#0a0f14”,
+borderLeft: `3px solid ${m.signal.color}`,
+border: “1px solid #1a2230”,
+borderRadius: 10,
+padding: “12px 14px”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+justifyContent: “space-between”,
+gap: 8,
+marginBottom: 6
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 12,
+color: “#ccc”,
+flex: 1,
+lineHeight: 1.4
+}
+}, m.title), /*#**PURE***/React.createElement(UBadge, {
+days: m.days
+})), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 8,
+alignItems: “center”,
+flexWrap: “wrap”
+}
+}, /*#**PURE***/React.createElement(CatBadge, {
+cat: m.category
+}), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 10,
+fontWeight: 700,
+color: m.signal.color,
+background: m.signal.color + “11”,
+border: `1px solid ${m.signal.color}33`,
+borderRadius: 4,
+padding: “2px 7px”
+}
+}, m.signal.label), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 9,
+color: “#444”
+}
+}, m.signal.why))))), /*#**PURE***/React.createElement(“div”, {
+style: S.secH
+}, “Activity Log”), /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#050709”,
+border: “1px solid #0f1520”,
+borderRadius: 10,
+padding: “10px 12px”,
+maxHeight: 200,
+overflowY: “auto”
+}
+}, log.length === 0 && /*#**PURE***/React.createElement(“div”, {
+style: {
+color: “#222”,
+fontSize: 12,
+textAlign: “center”,
+padding: 16
+}
+}, “No activity yet”), log.slice(0, 60).map((l, i) => /*#**PURE***/React.createElement(“div”, {
+key: i,
+style: {
+fontSize: 10,
+lineHeight: 1.9,
+fontFamily: “monospace”,
+color: {
+error: “#ff6b6b”,
+success: “#00ff88”,
+warn: “#f5a623”,
+trade: “#88aaff”
+}[l.type] || “#444”
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+color: “#222”,
+marginRight: 6
+}
+}, l.ts), l.msg))));
 }
 
 // ── Markets ───────────────────────────────────────────────────────────────────
-function MarketsScreen({markets,fmt$,addLog,demo,paper,config,weatherCache,fetchWeather,tradedRef,setPnl,setBalance,updMetrics,metrics}) {
-const [filter,setFilter] = useState(“all”);
-const [search,setSearch] = useState(””);
-const [catFilter,setCatFilter] = useState(“all”);
-
-const cats = [“all”,“economics”,“politics”,“crypto”,“financials”,“climate”,“tech”,“weather”,“companies”,“elections”,“culture”];
-const shown = markets
-.filter(m => filter===“signals” ? m.signal : true)
-.filter(m => catFilter===“all” || (m.category||””).toLowerCase()===catFilter)
-.filter(m => !search || m.title.toLowerCase().includes(search.toLowerCase()));
-
+function MarketsScreen(_ref11) {
+let {
+markets,
+fmt$,
+addLog,
+demo,
+paper,
+config,
+weatherCache,
+fetchWeather,
+tradedRef,
+setPnl,
+setBalance,
+updMetrics,
+metrics
+} = _ref11;
+const [filter, setFilter] = useState(“all”);
+const [search, setSearch] = useState(””);
+const [catFilter, setCatFilter] = useState(“all”);
+const cats = [“all”, “economics”, “politics”, “crypto”, “financials”, “climate”, “tech”, “weather”, “companies”, “elections”, “culture”];
+const shown = markets.filter(m => filter === “signals” ? m.signal : true).filter(m => catFilter === “all” || (m.category || “”).toLowerCase() === catFilter).filter(m => !search || m.title.toLowerCase().includes(search.toLowerCase()));
 const simulate = demo || paper;
-
-const doTrade = async (m) => {
+const doTrade = async m => {
 if (!m.signal) return;
-if (simulate && tradedRef.current.has(m.ticker)) { addLog(`Already in position: ${m.ticker}`, “warn”); return; }
-const price = m.signal.side===“no” ? m.no_bid : m.yes_bid;
-const cost  = kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days);
-addLog(`Manual [${m.signal.signal}]: ${m.ticker} | $${(cost/100).toFixed(2)} | ${m.signal.label}`, “trade”);
+if (simulate && tradedRef.current.has(m.ticker)) {
+addLog(`Already in position: ${m.ticker}`, “warn”);
+return;
+}
+const price = m.signal.side === “no” ? m.no_bid : m.yes_bid;
+const cost = kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days);
+addLog(`Manual [${m.signal.signal}]: ${m.ticker} | $${(cost / 100).toFixed(2)} | ${m.signal.label}`, “trade”);
 if (simulate) {
+var _metrics$bySignal$sig7, _metrics$bySignal$sig8, _metrics$bySignal$sig9, _metrics$bySignal$sig0, _metrics$bySignal$sig1;
 const sim = simulateTrade(m.signal, price, cost);
-if (!sim.filled) { addLog(`⟳ Not filled`, “info”); return; }
+if (!sim.filled) {
+addLog(`⟳ Not filled`, “info”);
+return;
+}
 tradedRef.current.add(m.ticker);
-setBalance(b => (b??10000)+sim.net);
-setPnl(p => ({ …p, realized: p.realized + sim.net }));
+setBalance(b => (b !== null && b !== void 0 ? b : 10000) + sim.net);
+setPnl(p => ({
+…p,
+realized: p.realized + sim.net
+}));
 const sig = m.signal.signal;
-updMetrics({ filled:metrics.filled+1, wins:metrics.wins+(sim.won?1:0), losses:metrics.losses+(sim.won?0:1), dollarPlaced:metrics.dollarPlaced+cost, dollarEarned:metrics.dollarEarned+sim.net,
-bySignal:{[sig]:{filled:(metrics.bySignal[sig]?.filled||0)+1,wins:(metrics.bySignal[sig]?.wins||0)+(sim.won?1:0),losses:(metrics.bySignal[sig]?.losses||0)+(sim.won?0:1),placed:(metrics.bySignal[sig]?.placed||0)+cost,earned:(metrics.bySignal[sig]?.earned||0)+sim.net}} });
-addLog(`${sim.won?"✓ WIN":"✗ LOSS"}: ${sim.net>=0?"+":""}${fmt$(sim.net)} | p=${(sim.trueWinProb*100).toFixed(0)}%`, sim.won?“success”:“error”);
+updMetrics({
+filled: metrics.filled + 1,
+wins: metrics.wins + (sim.won ? 1 : 0),
+losses: metrics.losses + (sim.won ? 0 : 1),
+dollarPlaced: metrics.dollarPlaced + cost,
+dollarEarned: metrics.dollarEarned + sim.net,
+bySignal: {
+[sig]: {
+filled: (((_metrics$bySignal$sig7 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig7 === void 0 ? void 0 : _metrics$bySignal$sig7.filled) || 0) + 1,
+wins: (((_metrics$bySignal$sig8 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig8 === void 0 ? void 0 : _metrics$bySignal$sig8.wins) || 0) + (sim.won ? 1 : 0),
+losses: (((_metrics$bySignal$sig9 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig9 === void 0 ? void 0 : _metrics$bySignal$sig9.losses) || 0) + (sim.won ? 0 : 1),
+placed: (((_metrics$bySignal$sig0 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig0 === void 0 ? void 0 : _metrics$bySignal$sig0.placed) || 0) + cost,
+earned: (((_metrics$bySignal$sig1 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig1 === void 0 ? void 0 : _metrics$bySignal$sig1.earned) || 0) + sim.net
+}
+}
+});
+addLog(`${sim.won ? "✓ WIN" : "✗ LOSS"}: ${sim.net >= 0 ? "+" : ""}${fmt$(sim.net)} | p=${(sim.trueWinProb * 100).toFixed(0)}%`, sim.won ? “success” : “error”);
 } else {
-try { await placeOrder(m.ticker, m.signal.side, Math.max(1,Math.round(cost/10)), price); addLog(“✓ Order placed”,“success”); }
-catch(e) { addLog(`✗ ${e.message}`,“error”); }
+try {
+await placeOrder(m.ticker, m.signal.side, Math.max(1, Math.round(cost / 10)), price);
+addLog(“✓ Order placed”, “success”);
+} catch (e) {
+addLog(`✗ ${e.message}`, “error”);
+}
 }
 };
-
-return (
-<div style={S.page}>
-<input style={{…S.inp,marginBottom:0}} placeholder=“Search markets…” value={search} onChange={e=>setSearch(e.target.value)} />
-<div style={{display:“flex”,gap:6,overflowX:“auto”,paddingBottom:4}}>
-{[“signals”,“all”].map(f=>(
-<button key={f} style={{flexShrink:0,padding:“6px 12px”,background:filter===f?”#00ff8810”:”#0a0f14”,border:`1px solid ${filter===f?"#00ff8830":"#1a2230"}`,borderRadius:7,color:filter===f?”#00ff88”:”#444”,fontSize:11,cursor:“pointer”,fontFamily:“inherit”}} onClick={()=>setFilter(f)}>
-{f===“signals”?“🔥 Signals”:“All”}
-</button>
-))}
-</div>
-<div style={{display:“flex”,gap:4,overflowX:“auto”,paddingBottom:4}}>
-{cats.map(c=>(
-<button key={c} style={{flexShrink:0,padding:“4px 8px”,background:catFilter===c?”#f5a62312”:”#0a0f14”,border:`1px solid ${catFilter===c?"#f5a62330":"#1a2230"}`,borderRadius:5,color:catFilter===c?”#f5a623”:”#444”,fontSize:9,cursor:“pointer”,fontFamily:“inherit”,textTransform:“uppercase”}} onClick={()=>setCatFilter(c)}>
-{c}
-</button>
-))}
-</div>
-<div style={{fontSize:11,color:”#444”}}>{shown.length} markets shown{isSportsMarket?””:” (sports blocked)”}</div>
-{shown.length===0 && <div style={S.empty}>No markets match your filters.</div>}
-{shown.map(m => {
+return /*#**PURE***/React.createElement(“div”, {
+style: S.page
+}, /*#**PURE***/React.createElement(“input”, {
+style: {
+…S.inp,
+marginBottom: 0
+},
+placeholder: “Search markets\u2026”,
+value: search,
+onChange: e => setSearch(e.target.value)
+}), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 6,
+overflowX: “auto”,
+paddingBottom: 4
+}
+}, [“signals”, “all”].map(f => /*#**PURE***/React.createElement(“button”, {
+key: f,
+style: {
+flexShrink: 0,
+padding: “6px 12px”,
+background: filter === f ? “#00ff8810” : “#0a0f14”,
+border: `1px solid ${filter === f ? "#00ff8830" : "#1a2230"}`,
+borderRadius: 7,
+color: filter === f ? “#00ff88” : “#444”,
+fontSize: 11,
+cursor: “pointer”,
+fontFamily: “inherit”
+},
+onClick: () => setFilter(f)
+}, f === “signals” ? “🔥 Signals” : “All”))), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 4,
+overflowX: “auto”,
+paddingBottom: 4
+}
+}, cats.map(c => /*#**PURE***/React.createElement(“button”, {
+key: c,
+style: {
+flexShrink: 0,
+padding: “4px 8px”,
+background: catFilter === c ? “#f5a62312” : “#0a0f14”,
+border: `1px solid ${catFilter === c ? "#f5a62330" : "#1a2230"}`,
+borderRadius: 5,
+color: catFilter === c ? “#f5a623” : “#444”,
+fontSize: 9,
+cursor: “pointer”,
+fontFamily: “inherit”,
+textTransform: “uppercase”
+},
+onClick: () => setCatFilter(c)
+}, c))), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 11,
+color: “#444”
+}
+}, shown.length, “ markets shown”, isSportsMarket ? “” : “ (sports blocked)”), shown.length === 0 && /*#**PURE***/React.createElement(“div”, {
+style: S.empty
+}, “No markets match your filters.”), shown.map(m => {
+var _m$signal;
 const blocked = isSportsMarket(m);
-const price = m.signal?.side===“no” ? m.no_bid : m.yes_bid;
-const cost  = m.signal ? kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days) : 0;
+const price = ((_m$signal = m.signal) === null || _m$signal === void 0 ? void 0 : _m$signal.side) === “no” ? m.no_bid : m.yes_bid;
+const cost = m.signal ? kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days) : 0;
 const wc = weatherCache[m.ticker];
-const isW = (m.category||””).toLowerCase()===“weather”;
-return (
-<div key={m.ticker} style={{background:blocked?”#0a0808”:”#0a0f14”,border:“1px solid #1a2230”,borderLeft:`3px solid ${blocked?"#ff3b30":m.signal?m.signal.color:"#1a2230"}`,borderRadius:12,padding:13,display:“flex”,flexDirection:“column”,gap:8,opacity:blocked?0.4:1}}>
-<div style={{display:“flex”,justifyContent:“space-between”,gap:8}}>
-<div style={{fontSize:12,fontWeight:600,color:blocked?”#555”:”#ddd”,flex:1,lineHeight:1.4}}>{m.title}</div>
-<div style={{display:“flex”,gap:4,alignItems:“flex-start”,flexShrink:0}}>
-{blocked && <span style={{fontSize:9,fontWeight:700,color:”#ff3b30”,background:”#ff3b3015”,border:“1px solid #ff3b3030”,borderRadius:4,padding:“2px 5px”}}>⛔</span>}
-<UBadge days={m.days} />
-</div>
-</div>
-<div style={{display:“flex”,alignItems:“center”,gap:6,flexWrap:“wrap”}}>
-<CatBadge cat={m.category} />
-{[[“YES”,`${m.yes_bid}¢`],[“NO”,`${m.no_bid}¢`],[“VOL”,m.volume?(m.volume/1000).toFixed(0)+“k”:”–”]].map(([k,v])=>(
-<span key={k} style={{fontSize:10,color:”#555”}}>{k}: <span style={{color:”#aaa”,fontWeight:700}}>{v}</span></span>
-))}
-</div>
-{!blocked && m.signal && (
-<div style={{display:“flex”,alignItems:“center”,justifyContent:“space-between”,flexWrap:“wrap”,gap:8}}>
-<div>
-<span style={{fontSize:10,fontWeight:700,color:m.signal.color,background:m.signal.color+“11”,border:`1px solid ${m.signal.color}33`,borderRadius:5,padding:“2px 8px”}}>{m.signal.label}</span>
-<div style={{fontSize:9,color:”#444”,marginTop:3}}>{m.signal.why} · Bet: {fmt$(cost)}</div>
-</div>
-<div style={{display:“flex”,gap:6}}>
-{isW && !wc?.loading && !wc?.data && <button style={S.btnWeather} onClick={()=>fetchWeather(m.ticker,m.title)}>🌤 Weather</button>}
-{isW && wc?.loading && <span style={{fontSize:10,color:”#38bdf8”}}>Analyzing…</span>}
-<button style={S.btnTrade} onClick={()=>doTrade(m)}>Trade →</button>
-</div>
-</div>
-)}
-{!blocked && !m.signal && isW && !wc?.data && (
-<button style={S.btnWeather} onClick={()=>fetchWeather(m.ticker,m.title)}>🌤 Analyze weather data</button>
-)}
-{wc?.data && (
-<div style={{background:”#06101a”,border:“1px solid #38bdf822”,borderRadius:8,padding:“8px 12px”,fontSize:11,color:”#93c5fd”,lineHeight:1.5}}>
-🌤 {wc.data.reasoning} (adj {wc.data.adjustment>=0?”+”:””}{wc.data.adjustment}¢, {wc.data.confidence}% conf · {wc.data.source})
-</div>
-)}
-</div>
-);
-})}
-</div>
-);
+const isW = (m.category || “”).toLowerCase() === “weather”;
+return /*#**PURE***/React.createElement(“div”, {
+key: m.ticker,
+style: {
+background: blocked ? “#0a0808” : “#0a0f14”,
+border: “1px solid #1a2230”,
+borderLeft: `3px solid ${blocked ? "#ff3b30" : m.signal ? m.signal.color : "#1a2230"}`,
+borderRadius: 12,
+padding: 13,
+display: “flex”,
+flexDirection: “column”,
+gap: 8,
+opacity: blocked ? 0.4 : 1
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+justifyContent: “space-between”,
+gap: 8
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 12,
+fontWeight: 600,
+color: blocked ? “#555” : “#ddd”,
+flex: 1,
+lineHeight: 1.4
+}
+}, m.title), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 4,
+alignItems: “flex-start”,
+flexShrink: 0
+}
+}, blocked && /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 9,
+fontWeight: 700,
+color: “#ff3b30”,
+background: “#ff3b3015”,
+border: “1px solid #ff3b3030”,
+borderRadius: 4,
+padding: “2px 5px”
+}
+}, “\u26D4”), /*#**PURE***/React.createElement(UBadge, {
+days: m.days
+}))), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+alignItems: “center”,
+gap: 6,
+flexWrap: “wrap”
+}
+}, /*#**PURE***/React.createElement(CatBadge, {
+cat: m.category
+}), [[“YES”, `${m.yes_bid}¢`], [“NO”, `${m.no_bid}¢`], [“VOL”, m.volume ? (m.volume / 1000).toFixed(0) + “k” : “–”]].map(_ref12 => {
+let [k, v] = _ref12;
+return /*#**PURE***/React.createElement(“span”, {
+key: k,
+style: {
+fontSize: 10,
+color: “#555”
+}
+}, k, “: “, /*#**PURE***/React.createElement(“span”, {
+style: {
+color: “#aaa”,
+fontWeight: 700
+}
+}, v));
+})), !blocked && m.signal && /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+alignItems: “center”,
+justifyContent: “space-between”,
+flexWrap: “wrap”,
+gap: 8
+}
+}, /*#**PURE***/React.createElement(“div”, null, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 10,
+fontWeight: 700,
+color: m.signal.color,
+background: m.signal.color + “11”,
+border: `1px solid ${m.signal.color}33`,
+borderRadius: 5,
+padding: “2px 8px”
+}
+}, m.signal.label), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 9,
+color: “#444”,
+marginTop: 3
+}
+}, m.signal.why, “ \xB7 Bet: “, fmt$(cost))), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 6
+}
+}, isW && !(wc !== null && wc !== void 0 && wc.loading) && !(wc !== null && wc !== void 0 && wc.data) && /*#**PURE***/React.createElement(“button”, {
+style: S.btnWeather,
+onClick: () => fetchWeather(m.ticker, m.title)
+}, “\uD83C\uDF24 Weather”), isW && (wc === null || wc === void 0 ? void 0 : wc.loading) && /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 10,
+color: “#38bdf8”
+}
+}, “Analyzing\u2026”), /*#**PURE***/React.createElement(“button”, {
+style: S.btnTrade,
+onClick: () => doTrade(m)
+}, “Trade \u2192”))), !blocked && !m.signal && isW && !(wc !== null && wc !== void 0 && wc.data) && /*#**PURE***/React.createElement(“button”, {
+style: S.btnWeather,
+onClick: () => fetchWeather(m.ticker, m.title)
+}, “\uD83C\uDF24 Analyze weather data”), (wc === null || wc === void 0 ? void 0 : wc.data) && /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#06101a”,
+border: “1px solid #38bdf822”,
+borderRadius: 8,
+padding: “8px 12px”,
+fontSize: 11,
+color: “#93c5fd”,
+lineHeight: 1.5
+}
+}, “\uD83C\uDF24 “, wc.data.reasoning, “ (adj “, wc.data.adjustment >= 0 ? “+” : “”, wc.data.adjustment, “\xA2, “, wc.data.confidence, “% conf \xB7 “, wc.data.source, “)”));
+}));
 }
 
 // ── Metrics ───────────────────────────────────────────────────────────────────
-function MetricsScreen({metrics,winRate,fmt$,pnl,config,resetMetrics}) {
-const roi = config.startBalanceCents > 0 ? ((metrics.dollarEarned/config.startBalanceCents)*100).toFixed(1) : “0.0”;
-const fillRate = metrics.attempted > 0 ? ((metrics.filled/metrics.attempted)*100).toFixed(0) : “–”;
-const avgWin  = metrics.wins   > 0 ? metrics.dollarEarned / metrics.wins   / 100 : 0;
+function MetricsScreen(_ref13) {
+let {
+metrics,
+winRate,
+fmt$,
+pnl,
+config,
+resetMetrics
+} = _ref13;
+const roi = config.startBalanceCents > 0 ? (metrics.dollarEarned / config.startBalanceCents * 100).toFixed(1) : “0.0”;
+const fillRate = metrics.attempted > 0 ? (metrics.filled / metrics.attempted * 100).toFixed(0) : “–”;
+const avgWin = metrics.wins > 0 ? metrics.dollarEarned / metrics.wins / 100 : 0;
 const avgLoss = metrics.losses > 0 ? Math.abs(metrics.dollarPlaced - (metrics.dollarEarned + metrics.dollarPlaced)) / metrics.losses / 100 : 0;
-
-return (
-<div style={S.page}>
-<div style={{background:”#0a0f14”,border:“1px solid #1a2230”,borderRadius:12,padding:14}}>
-<div style={{fontSize:13,fontWeight:700,marginBottom:12}}>Performance Overview</div>
-<div style={{display:“grid”,gridTemplateColumns:“1fr 1fr”,gap:10}}>
-{[
-[“Markets Evaluated”,  metrics.evaluated,      “#aaa”],
-[“Signals Generated”,  metrics.signalsFound,   “#00ff88”],
-[“Orders Attempted”,   metrics.attempted,      “#fff”],
-[“Orders Filled”,      metrics.filled,         “#00ff88”],
-[“Fill Rate”,          fillRate===”–”?”–”:fillRate+”%”, “#f5a623”],
-[“Wins”,               metrics.wins,           “#00ff88”],
-[“Losses”,             metrics.losses,         “#ff6b6b”],
-[“Win Rate”,           winRate===”–”?”–”:winRate+”%”,   metrics.wins>metrics.losses?”#00ff88”:”#ff6b6b”],
-[“Total $ Placed”,     fmt$(metrics.dollarPlaced), “#fff”],
-[“Total $ Earned”,     (metrics.dollarEarned>=0?”+”:””)+fmt$(Math.abs(metrics.dollarEarned)), metrics.dollarEarned>=0?”#00ff88”:”#ff6b6b”],
-[“ROI”,                (parseFloat(roi)>=0?”+”:””)+roi+”%”, parseFloat(roi)>=0?”#00ff88”:”#ff6b6b”],
-[“Avg Win”,            avgWin>0?”+$”+avgWin.toFixed(2):”–”, “#00ff88”],
-].map(([l,v,c]) => (
-<div key={l} style={{background:”#080c10”,borderRadius:8,padding:“10px 12px”}}>
-<div style={{fontSize:9,color:”#333”,textTransform:“uppercase”,letterSpacing:1,marginBottom:4}}>{l}</div>
-<div style={{fontSize:18,fontWeight:900,color:c}}>{v}</div>
-</div>
-))}
-</div>
-</div>
-
-```
-  <div style={{fontSize:11,fontWeight:700,color:"#aaa",marginTop:4}}>By Strategy</div>
-  {Object.entries(metrics.bySignal).map(([sig,s]) => {
-    if (!s.attempted) return null;
-    const wr = (s.wins+s.losses)>0 ? ((s.wins/(s.wins+s.losses))*100).toFixed(0)+"%" : "–";
-    const cols = {ARB:"#00ff88",VOL:"#00ff88",FADE:"#ff6b6b",WTHR:"#38bdf8"};
-    const labels = {ARB:"Arbitrage",VOL:"Volume Edge",FADE:"Fade Extremes",WTHR:"Weather"};
-    return (
-      <div key={sig} style={{background:"#0a0f14",border:"1px solid #1a2230",borderLeft:`3px solid ${cols[sig]||"#555"}`,borderRadius:10,padding:12}}>
-        <div style={{fontSize:12,fontWeight:700,color:cols[sig],marginBottom:8}}>{labels[sig]||sig}</div>
-        <div style={{display:"flex",gap:14,flexWrap:"wrap"}}>
-          {[["Attempted",s.attempted,"#aaa"],["Filled",s.filled,"#fff"],["Wins",s.wins,"#00ff88"],["Losses",s.losses,"#ff6b6b"],["Win %",wr,cols[sig]],["$ Placed",fmt$(s.placed),"#fff"],["$ Earned",(s.earned>=0?"+":"")+fmt$(Math.abs(s.earned)),s.earned>=0?"#00ff88":"#ff6b6b"]].map(([l,v,c])=>(
-            <div key={l}><span style={{fontSize:9,color:"#444"}}>{l} </span><span style={{fontSize:12,fontWeight:700,color:c}}>{v}</span></div>
-          ))}
-        </div>
-      </div>
-    );
-  })}
-
-  <button style={{...S.btnGhost,color:"#ff6b6b",borderColor:"#ff6b6b22",marginTop:4}} onClick={resetMetrics}>
-    Reset All Metrics
-  </button>
-</div>
-```
-
-);
+return /*#**PURE***/React.createElement(“div”, {
+style: S.page
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderRadius: 12,
+padding: 14
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 13,
+fontWeight: 700,
+marginBottom: 12
+}
+}, “Performance Overview”), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “grid”,
+gridTemplateColumns: “1fr 1fr”,
+gap: 10
+}
+}, [[“Markets Evaluated”, metrics.evaluated, “#aaa”], [“Signals Generated”, metrics.signalsFound, “#00ff88”], [“Orders Attempted”, metrics.attempted, “#fff”], [“Orders Filled”, metrics.filled, “#00ff88”], [“Fill Rate”, fillRate === “–” ? “–” : fillRate + “%”, “#f5a623”], [“Wins”, metrics.wins, “#00ff88”], [“Losses”, metrics.losses, “#ff6b6b”], [“Win Rate”, winRate === “–” ? “–” : winRate + “%”, metrics.wins > metrics.losses ? “#00ff88” : “#ff6b6b”], [“Total $ Placed”, fmt$(metrics.dollarPlaced), “#fff”], [“Total $ Earned”, (metrics.dollarEarned >= 0 ? “+” : “”) + fmt$(Math.abs(metrics.dollarEarned)), metrics.dollarEarned >= 0 ? “#00ff88” : “#ff6b6b”], [“ROI”, (parseFloat(roi) >= 0 ? “+” : “”) + roi + “%”, parseFloat(roi) >= 0 ? “#00ff88” : “#ff6b6b”], [“Avg Win”, avgWin > 0 ? “+$” + avgWin.toFixed(2) : “–”, “#00ff88”]].map(_ref14 => {
+let [l, v, c] = _ref14;
+return /*#**PURE***/React.createElement(“div”, {
+key: l,
+style: {
+background: “#080c10”,
+borderRadius: 8,
+padding: “10px 12px”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 9,
+color: “#333”,
+textTransform: “uppercase”,
+letterSpacing: 1,
+marginBottom: 4
+}
+}, l), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 18,
+fontWeight: 900,
+color: c
+}
+}, v));
+}))), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 11,
+fontWeight: 700,
+color: “#aaa”,
+marginTop: 4
+}
+}, “By Strategy”), Object.entries(metrics.bySignal).map(_ref15 => {
+let [sig, s] = _ref15;
+if (!s.attempted) return null;
+const wr = s.wins + s.losses > 0 ? (s.wins / (s.wins + s.losses) * 100).toFixed(0) + “%” : “–”;
+const cols = {
+ARB: “#00ff88”,
+VOL: “#00ff88”,
+FADE: “#ff6b6b”,
+WTHR: “#38bdf8”
+};
+const labels = {
+ARB: “Arbitrage”,
+VOL: “Volume Edge”,
+FADE: “Fade Extremes”,
+WTHR: “Weather”
+};
+return /*#**PURE***/React.createElement(“div”, {
+key: sig,
+style: {
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderLeft: `3px solid ${cols[sig] || "#555"}`,
+borderRadius: 10,
+padding: 12
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 12,
+fontWeight: 700,
+color: cols[sig],
+marginBottom: 8
+}
+}, labels[sig] || sig), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 14,
+flexWrap: “wrap”
+}
+}, [[“Attempted”, s.attempted, “#aaa”], [“Filled”, s.filled, “#fff”], [“Wins”, s.wins, “#00ff88”], [“Losses”, s.losses, “#ff6b6b”], [“Win %”, wr, cols[sig]], [”$ Placed”, fmt$(s.placed), “#fff”], [”$ Earned”, (s.earned >= 0 ? “+” : “”) + fmt$(Math.abs(s.earned)), s.earned >= 0 ? “#00ff88” : “#ff6b6b”]].map(_ref16 => {
+let [l, v, c] = _ref16;
+return /*#**PURE***/React.createElement(“div”, {
+key: l
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 9,
+color: “#444”
+}
+}, l, “ “), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 12,
+fontWeight: 700,
+color: c
+}
+}, v));
+})));
+}), /*#**PURE***/React.createElement(“button”, {
+style: {
+…S.btnGhost,
+color: “#ff6b6b”,
+borderColor: “#ff6b6b22”,
+marginTop: 4
+},
+onClick: resetMetrics
+}, “Reset All Metrics”));
 }
 
 // ── Weather Hub ───────────────────────────────────────────────────────────────
-function WeatherScreen({markets,weatherCache,fetchWeather,config}) {
+function WeatherScreen(_ref17) {
+let {
+markets,
+weatherCache,
+fetchWeather,
+config
+} = _ref17;
 const weatherMkts = markets.filter(m => {
-const t = (m.title||””).toLowerCase();
-const c = (m.category||””).toLowerCase();
-return c===“weather” || t.includes(“weather”) || t.includes(“snow”) || t.includes(“rain”) || t.includes(“hurricane”) || t.includes(“temperature”) || t.includes(“storm”) || t.includes(“flood”) || t.includes(“drought”);
+const t = (m.title || “”).toLowerCase();
+const c = (m.category || “”).toLowerCase();
+return c === “weather” || t.includes(“weather”) || t.includes(“snow”) || t.includes(“rain”) || t.includes(“hurricane”) || t.includes(“temperature”) || t.includes(“storm”) || t.includes(“flood”) || t.includes(“drought”);
 });
-const loaded  = weatherMkts.filter(m => weatherCache[m.ticker]?.data);
+const loaded = weatherMkts.filter(m => {
+var _weatherCache$m$ticke3;
+return (_weatherCache$m$ticke3 = weatherCache[m.ticker]) === null || _weatherCache$m$ticke3 === void 0 ? void 0 : _weatherCache$m$ticke3.data;
+});
 const pending = weatherMkts.filter(m => !weatherCache[m.ticker]);
-
-return (
-<div style={S.page}>
-<div style={{background:“linear-gradient(135deg,#06101a,#0a1828)”,border:“1px solid #38bdf822”,borderRadius:14,padding:“16px 18px”}}>
-<div style={{fontSize:15,fontWeight:800,color:”#38bdf8”,marginBottom:6}}>🌤 Weather Market Analysis</div>
-<div style={{fontSize:12,color:”#555”,lineHeight:1.6}}>
-Claude searches NOAA, NWS, AccuWeather, and Weather.com to match weather predictions with Kalshi markets. Results adjust the trading edge by up to ±15¢. Markets sorted by soonest expiry.
-</div>
-</div>
-
-```
-  {weatherMkts.length === 0 && <div style={S.empty}>No weather markets found in the {config.daysWindow}-day window.</div>}
-
-  {pending.length > 0 && (
-    <button style={S.btnG} onClick={() => pending.slice(0,5).forEach(m => fetchWeather(m.ticker, m.title))}>
-      🌤 Analyze Top {Math.min(5,pending.length)} Weather Markets
-    </button>
-  )}
-
-  {weatherMkts.some(m => weatherCache[m.ticker]?.loading) && (
-    <div style={{background:"#06101a",border:"1px solid #38bdf822",borderRadius:8,padding:"11px 14px",fontSize:12,color:"#38bdf8"}}>
-      ⟳ Fetching weather data…
-    </div>
-  )}
-
-  {weatherMkts.map(m => {
-    const wc = weatherCache[m.ticker];
-    return (
-      <div key={m.ticker} style={{background:"#0a0f14",border:"1px solid #1a2230",borderLeft:`3px solid #38bdf8`,borderRadius:12,padding:14}}>
-        <div style={{display:"flex",justifyContent:"space-between",gap:8,marginBottom:8}}>
-          <div style={{fontSize:13,fontWeight:600,color:"#ddd",flex:1,lineHeight:1.4}}>{m.title}</div>
-          <UBadge days={m.days} />
-        </div>
-        <div style={{display:"flex",gap:10,marginBottom:8}}>
-          <span style={{fontSize:10,color:"#555"}}>YES: <strong style={{color:"#aaa"}}>{m.yes_bid}¢</strong></span>
-          <span style={{fontSize:10,color:"#555"}}>NO: <strong style={{color:"#aaa"}}>{m.no_bid}¢</strong></span>
-        </div>
-        {!wc && <button style={S.btnWeather} onClick={() => fetchWeather(m.ticker, m.title)}>🌤 Fetch weather analysis</button>}
-        {wc?.loading && <div style={{fontSize:11,color:"#38bdf8"}}>Searching weather data…</div>}
-        {wc?.data && (
-          <div style={{background:"#06101a",border:"1px solid #38bdf822",borderRadius:8,padding:"10px 12px",display:"flex",flexDirection:"column",gap:6}}>
-            <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
-              <span style={{fontWeight:800,fontSize:12,color:{bullish:"#00ff88",bearish:"#ff6b6b",neutral:"#888"}[wc.data.overall]||"#888"}}>{wc.data.overall?.toUpperCase()}</span>
-              <span style={{fontSize:11,color:"#555"}}>Conf: {wc.data.confidence}%</span>
-              <span style={{fontSize:11,fontWeight:700,color:wc.data.adjustment>=0?"#00ff88":"#ff6b6b"}}>Adj: {wc.data.adjustment>=0?"+":""}{wc.data.adjustment}¢</span>
-              <span style={{fontSize:10,color:"#38bdf8"}}>via {wc.data.source}</span>
-              <span style={{fontSize:10,color:"#555"}}>Rec: <strong style={{color:wc.data.recommended_side==="yes"?"#00ff88":wc.data.recommended_side==="no"?"#ff6b6b":"#888"}}>{wc.data.recommended_side?.toUpperCase()}</strong></span>
-            </div>
-            <p style={{fontSize:11,color:"#777",margin:0,lineHeight:1.5}}>{wc.data.reasoning}</p>
-          </div>
-        )}
-      </div>
-    );
-  })}
-</div>
-```
-
-);
+return /*#**PURE***/React.createElement(“div”, {
+style: S.page
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “linear-gradient(135deg,#06101a,#0a1828)”,
+border: “1px solid #38bdf822”,
+borderRadius: 14,
+padding: “16px 18px”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 15,
+fontWeight: 800,
+color: “#38bdf8”,
+marginBottom: 6
+}
+}, “\uD83C\uDF24 Weather Market Analysis”), /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 12,
+color: “#555”,
+lineHeight: 1.6
+}
+}, “Claude searches NOAA, NWS, AccuWeather, and Weather.com to match weather predictions with Kalshi markets. Results adjust the trading edge by up to \xB115\xA2. Markets sorted by soonest expiry.”)), weatherMkts.length === 0 && /*#**PURE***/React.createElement(“div”, {
+style: S.empty
+}, “No weather markets found in the “, config.daysWindow, “-day window.”), pending.length > 0 && /*#**PURE***/React.createElement(“button”, {
+style: S.btnG,
+onClick: () => pending.slice(0, 5).forEach(m => fetchWeather(m.ticker, m.title))
+}, “\uD83C\uDF24 Analyze Top “, Math.min(5, pending.length), “ Weather Markets”), weatherMkts.some(m => {
+var _weatherCache$m$ticke4;
+return (_weatherCache$m$ticke4 = weatherCache[m.ticker]) === null || _weatherCache$m$ticke4 === void 0 ? void 0 : _weatherCache$m$ticke4.loading;
+}) && /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#06101a”,
+border: “1px solid #38bdf822”,
+borderRadius: 8,
+padding: “11px 14px”,
+fontSize: 12,
+color: “#38bdf8”
+}
+}, “\u27F3 Fetching weather data\u2026”), weatherMkts.map(m => {
+var _wc$data$overall, *wc$data$recommended*;
+const wc = weatherCache[m.ticker];
+return /*#**PURE***/React.createElement(“div”, {
+key: m.ticker,
+style: {
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderLeft: `3px solid #38bdf8`,
+borderRadius: 12,
+padding: 14
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+justifyContent: “space-between”,
+gap: 8,
+marginBottom: 8
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 13,
+fontWeight: 600,
+color: “#ddd”,
+flex: 1,
+lineHeight: 1.4
+}
+}, m.title), /*#**PURE***/React.createElement(UBadge, {
+days: m.days
+})), /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 10,
+marginBottom: 8
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 10,
+color: “#555”
+}
+}, “YES: “, /*#**PURE***/React.createElement(“strong”, {
+style: {
+color: “#aaa”
+}
+}, m.yes_bid, “\xA2”)), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 10,
+color: “#555”
+}
+}, “NO: “, /*#**PURE***/React.createElement(“strong”, {
+style: {
+color: “#aaa”
+}
+}, m.no_bid, “\xA2”))), !wc && /*#**PURE***/React.createElement(“button”, {
+style: S.btnWeather,
+onClick: () => fetchWeather(m.ticker, m.title)
+}, “\uD83C\uDF24 Fetch weather analysis”), (wc === null || wc === void 0 ? void 0 : wc.loading) && /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 11,
+color: “#38bdf8”
+}
+}, “Searching weather data\u2026”), (wc === null || wc === void 0 ? void 0 : wc.data) && /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#06101a”,
+border: “1px solid #38bdf822”,
+borderRadius: 8,
+padding: “10px 12px”,
+display: “flex”,
+flexDirection: “column”,
+gap: 6
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+gap: 10,
+alignItems: “center”,
+flexWrap: “wrap”
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontWeight: 800,
+fontSize: 12,
+color: {
+bullish: “#00ff88”,
+bearish: “#ff6b6b”,
+neutral: “#888”
+}[wc.data.overall] || “#888”
+}
+}, (_wc$data$overall = wc.data.overall) === null || _wc$data$overall === void 0 ? void 0 : _wc$data$overall.toUpperCase()), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+color: “#555”
+}
+}, “Conf: “, wc.data.confidence, “%”), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+fontWeight: 700,
+color: wc.data.adjustment >= 0 ? “#00ff88” : “#ff6b6b”
+}
+}, “Adj: “, wc.data.adjustment >= 0 ? “+” : “”, wc.data.adjustment, “\xA2”), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 10,
+color: “#38bdf8”
+}
+}, “via “, wc.data.source), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 10,
+color: “#555”
+}
+}, “Rec: “, /*#**PURE***/React.createElement(“strong”, {
+style: {
+color: wc.data.recommended_side === “yes” ? “#00ff88” : wc.data.recommended_side === “no” ? “#ff6b6b” : “#888”
+}
+}, (*wc$data$recommended* = wc.data.recommended_side) === null || *wc$data$recommended* === void 0 ? void 0 : *wc$data$recommended*.toUpperCase()))), /*#**PURE***/React.createElement(“p”, {
+style: {
+fontSize: 11,
+color: “#777”,
+margin: 0,
+lineHeight: 1.5
+}
+}, wc.data.reasoning)));
+}));
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-function SettingsScreen({config,setConfig,fmt$,paper,demo,onLogout}) {
-const set = (k,v) => setConfig(c => ({ …c, [k]:v }));
-return (
-<div style={S.page}>
-<div style={{background:”#0a0f14”,border:“1px solid #1a2230”,borderRadius:12,overflow:“hidden”}}>
-{[
-{l:“Max bet per trade”, k:“maxBetCents”,       mn:100, mx:2000, st:100, d:v=>fmt$(v)},
-{l:“Kelly fraction”,   k:“kellyFraction”,      mn:10,  mx:50,   st:5,   d:v=>`${v}%`, f:100},
-{l:“Min edge”,         k:“minEdge”,            mn:1,   mx:10,   st:1,   d:v=>`${v}%`, f:100},
-{l:“Days window”,      k:“daysWindow”,         mn:3,   mx:30,   st:1,   d:v=>`${v}d`},
-{l:“Scan interval”,    k:“scanIntervalSec”,    mn:15,  mx:300,  st:15,  d:v=>`${v}s`},
-{l:“Min volume ($)”,   k:“minVolume”,          mn:1000,mx:50000,st:1000,d:v=>`$${(v/100).toFixed(0)}`},
-{l:“Stop-loss %”,      k:“stopLossPct”,        mn:10,  mx:40,   st:5,   d:v=>`${v}%`, f:100},
-{l:“Circuit errors”,   k:“circuitMaxErrors”,   mn:2,   mx:20,   st:1,   d:v=>`${v}`},
-{l:“Circuit losses”,   k:“circuitMaxLosses”,   mn:2,   mx:20,   st:1,   d:v=>`${v}`},
-].map(({l,k,mn,mx,st,d,f})=>{
-const raw = f ? Math.round(config[k]*f) : config[k];
-return (
-<div key={k} style={{padding:“12px 14px”,borderBottom:“1px solid #0f1520”}}>
-<div style={{display:“flex”,justifyContent:“space-between”,marginBottom:5}}>
-<span style={{fontSize:12,color:”#666”}}>{l}</span>
-<span style={{fontSize:12,color:”#00ff88”,fontWeight:700}}>{d(raw)}</span>
-</div>
-<input type=“range” min={mn} max={mx} step={st} value={raw} style={{width:“100%”,accentColor:”#00ff88”}}
-onChange={e=>set(k, f ? Number(e.target.value)/f : Number(e.target.value))} />
-</div>
-);
-})}
-</div>
-
-```
-  <div style={{background:"#0a0f14",border:"1px solid #1a2230",borderRadius:12,overflow:"hidden"}}>
-    {[["Fade extremes (>92% / <8%)","fadeExtremes"],["Volume momentum edge","volumeEdge"]].map(([l,k])=>(
-      <div key={k} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 14px",borderBottom:"1px solid #0f1520"}}>
-        <span style={{fontSize:12,color:"#666",flex:1,marginRight:12}}>{l}</span>
-        <div style={{...S.toggle,width:44,height:24,background:config[k]?"#00ff88":"#111",border:`1px solid ${config[k]?"#00ff88":"#222"}`}} onClick={()=>set(k,!config[k])}>
-          <div style={{...S.thumb,transform:config[k]?"translateX(20px)":"translateX(2px)"}} />
-        </div>
-      </div>
-    ))}
-  </div>
-
-  <div style={{background:"#0a0f14",border:"1px solid #1a2230",borderRadius:12,padding:14}}>
-    <div style={{fontSize:11,fontWeight:700,color:"#aaa",marginBottom:10}}>Exposure Scaling</div>
-    {[0,1,2,3,4].map(i=>{
-      const bal = config.startBalanceCents + i*10000;
-      const exp = 5000 + i*5000;
-      return (
-        <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #0f1520"}}>
-          <span style={{fontSize:11,color:"#555"}}>Account {fmt$(bal)}</span>
-          <span style={{fontSize:11,fontWeight:700,color:"#00ff88"}}>→ {fmt$(exp)} exposure</span>
-        </div>
-      );
-    })}
-  </div>
-
-  <div style={{background:"#0a0f14",border:"1px solid #1a2230",borderRadius:12,padding:14}}>
-    <div style={{fontSize:11,fontWeight:700,color:"#aaa",marginBottom:10}}>Strategy Guide</div>
-    {[
-      ["ARB","#00ff88","YES+NO < 93¢ = guaranteed profit regardless of outcome"],
-      ["VOL","#00ff88","High volume + tight spread + clear direction = smart money confirmation"],
-      ["FADE","#ff6b6b","Markets >92% or <8% overweight recency bias — fade the extreme"],
-      ["WTHR","#38bdf8","Weather data from NOAA/NWS adjusts edge on weather markets"],
-      ["Circuit","#f5a623","Auto-halts if 5+ API errors or 6+ consecutive losses in a session"],
-      ["Kelly","#88aaff","25% fractional Kelly compounds gains while limiting drawdown"],
-    ].map(([t,c,d])=>(
-      <p key={t} style={{fontSize:11,color:"#555",margin:"0 0 10px",lineHeight:1.65}}>
-        <strong style={{color:c}}>[{t}]</strong> {d}
-      </p>
-    ))}
-  </div>
-
-  <button style={{background:"transparent",color:"#ff6b6b",border:"1px solid #ff6b6b22",borderRadius:10,padding:"12px 20px",fontSize:13,cursor:"pointer",fontFamily:"inherit"}} onClick={onLogout}>
-    Disconnect
-  </button>
-</div>
-```
-
-);
+function SettingsScreen(_ref18) {
+let {
+config,
+setConfig,
+fmt$,
+paper,
+demo,
+onLogout
+} = _ref18;
+const set = (k, v) => setConfig(c => ({
+…c,
+[k]: v
+}));
+return /*#**PURE***/React.createElement(“div”, {
+style: S.page
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderRadius: 12,
+overflow: “hidden”
+}
+}, [{
+l: “Max bet per trade”,
+k: “maxBetCents”,
+mn: 100,
+mx: 2000,
+st: 100,
+d: v => fmt$(v)
+}, {
+l: “Kelly fraction”,
+k: “kellyFraction”,
+mn: 10,
+mx: 50,
+st: 5,
+d: v => `${v}%`,
+f: 100
+}, {
+l: “Min edge”,
+k: “minEdge”,
+mn: 1,
+mx: 10,
+st: 1,
+d: v => `${v}%`,
+f: 100
+}, {
+l: “Days window”,
+k: “daysWindow”,
+mn: 3,
+mx: 30,
+st: 1,
+d: v => `${v}d`
+}, {
+l: “Scan interval”,
+k: “scanIntervalSec”,
+mn: 15,
+mx: 300,
+st: 15,
+d: v => `${v}s`
+}, {
+l: “Min volume ($)”,
+k: “minVolume”,
+mn: 1000,
+mx: 50000,
+st: 1000,
+d: v => `$${(v / 100).toFixed(0)}`
+}, {
+l: “Stop-loss %”,
+k: “stopLossPct”,
+mn: 10,
+mx: 40,
+st: 5,
+d: v => `${v}%`,
+f: 100
+}, {
+l: “Circuit errors”,
+k: “circuitMaxErrors”,
+mn: 2,
+mx: 20,
+st: 1,
+d: v => `${v}`
+}, {
+l: “Circuit losses”,
+k: “circuitMaxLosses”,
+mn: 2,
+mx: 20,
+st: 1,
+d: v => `${v}`
+}].map(_ref19 => {
+let {
+l,
+k,
+mn,
+mx,
+st,
+d,
+f
+} = _ref19;
+const raw = f ? Math.round(config[k] * f) : config[k];
+return /*#**PURE***/React.createElement(“div”, {
+key: k,
+style: {
+padding: “12px 14px”,
+borderBottom: “1px solid #0f1520”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+justifyContent: “space-between”,
+marginBottom: 5
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 12,
+color: “#666”
+}
+}, l), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 12,
+color: “#00ff88”,
+fontWeight: 700
+}
+}, d(raw))), /*#**PURE***/React.createElement(“input”, {
+type: “range”,
+min: mn,
+max: mx,
+step: st,
+value: raw,
+style: {
+width: “100%”,
+accentColor: “#00ff88”
+},
+onChange: e => set(k, f ? Number(e.target.value) / f : Number(e.target.value))
+}));
+})), /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderRadius: 12,
+overflow: “hidden”
+}
+}, [[“Fade extremes (>92% / <8%)”, “fadeExtremes”], [“Volume momentum edge”, “volumeEdge”]].map(_ref20 => {
+let [l, k] = _ref20;
+return /*#**PURE***/React.createElement(“div”, {
+key: k,
+style: {
+display: “flex”,
+alignItems: “center”,
+justifyContent: “space-between”,
+padding: “12px 14px”,
+borderBottom: “1px solid #0f1520”
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 12,
+color: “#666”,
+flex: 1,
+marginRight: 12
+}
+}, l), /*#**PURE***/React.createElement(“div”, {
+style: {
+…S.toggle,
+width: 44,
+height: 24,
+background: config[k] ? “#00ff88” : “#111”,
+border: `1px solid ${config[k] ? "#00ff88" : "#222"}`
+},
+onClick: () => set(k, !config[k])
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+…S.thumb,
+transform: config[k] ? “translateX(20px)” : “translateX(2px)”
+}
+})));
+})), /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderRadius: 12,
+padding: 14
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 11,
+fontWeight: 700,
+color: “#aaa”,
+marginBottom: 10
+}
+}, “Exposure Scaling”), [0, 1, 2, 3, 4].map(i => {
+const bal = config.startBalanceCents + i * 10000;
+const exp = 5000 + i * 5000;
+return /*#**PURE***/React.createElement(“div”, {
+key: i,
+style: {
+display: “flex”,
+justifyContent: “space-between”,
+padding: “5px 0”,
+borderBottom: “1px solid #0f1520”
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+color: “#555”
+}
+}, “Account “, fmt$(bal)), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+fontWeight: 700,
+color: “#00ff88”
+}
+}, “\u2192 “, fmt$(exp), “ exposure”));
+})), /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderRadius: 12,
+padding: 14
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+fontSize: 11,
+fontWeight: 700,
+color: “#aaa”,
+marginBottom: 10
+}
+}, “Strategy Guide”), [[“ARB”, “#00ff88”, “YES+NO < 93¢ = guaranteed profit regardless of outcome”], [“VOL”, “#00ff88”, “High volume + tight spread + clear direction = smart money confirmation”], [“FADE”, “#ff6b6b”, “Markets >92% or <8% overweight recency bias — fade the extreme”], [“WTHR”, “#38bdf8”, “Weather data from NOAA/NWS adjusts edge on weather markets”], [“Circuit”, “#f5a623”, “Auto-halts if 5+ API errors or 6+ consecutive losses in a session”], [“Kelly”, “#88aaff”, “25% fractional Kelly compounds gains while limiting drawdown”]].map(_ref21 => {
+let [t, c, d] = _ref21;
+return /*#**PURE***/React.createElement(“p”, {
+key: t,
+style: {
+fontSize: 11,
+color: “#555”,
+margin: “0 0 10px”,
+lineHeight: 1.65
+}
+}, /*#**PURE***/React.createElement(“strong”, {
+style: {
+color: c
+}
+}, “[”, t, “]”), “ “, d);
+})), /*#**PURE***/React.createElement(“button”, {
+style: {
+background: “transparent”,
+color: “#ff6b6b”,
+border: “1px solid #ff6b6b22”,
+borderRadius: 10,
+padding: “12px 20px”,
+fontSize: 13,
+cursor: “pointer”,
+fontFamily: “inherit”
+},
+onClick: onLogout
+}, “Disconnect”));
 }
 
 // ── Proxy Field ───────────────────────────────────────────────────────────────
-function ProxyField({proxyUrl,setProxyUrl}) {
-const [open,setOpen] = useState(!!proxyUrl);
-return (
-<div style={{border:“1px solid #1a2230”,borderRadius:10,overflow:“hidden”}}>
-<div style={{display:“flex”,alignItems:“center”,justifyContent:“space-between”,padding:“10px 14px”,cursor:“pointer”,background:”#0a0f14”}} onClick={()=>setOpen(o=>!o)}>
-<span style={{fontSize:11,color:”#555”}}>{proxyUrl?<span style={{color:”#00ff88”}}>✓ Proxy configured</span>:“⚙️ CORS proxy (only needed if Connect fails)”}</span>
-<span style={{fontSize:11,color:”#444”}}>{open?“▲”:“▼”}</span>
-</div>
-{open && (
-<div style={{padding:“0 14px 14px”,background:”#0a0f14”,display:“flex”,flexDirection:“column”,gap:8}}>
-<p style={{fontSize:11,color:”#555”,margin:0,lineHeight:1.6}}>If Connect fails, deploy the free Cloudflare Worker and paste its .workers.dev URL here.</p>
-<input style={{background:”#0e141b”,border:“1px solid #1a2230”,borderRadius:8,padding:“9px 12px”,color:”#fff”,fontSize:13,fontFamily:“inherit”,outline:“none”}}
-type=“url” placeholder=“https://your-worker.workers.dev” value={proxyUrl} onChange={e=>setProxyUrl(e.target.value)} />
-<SetupGuide />
-</div>
-)}
-</div>
-);
+function ProxyField(_ref22) {
+let {
+proxyUrl,
+setProxyUrl
+} = _ref22;
+const [open, setOpen] = useState(!!proxyUrl);
+return /*#**PURE***/React.createElement(“div”, {
+style: {
+border: “1px solid #1a2230”,
+borderRadius: 10,
+overflow: “hidden”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+alignItems: “center”,
+justifyContent: “space-between”,
+padding: “10px 14px”,
+cursor: “pointer”,
+background: “#0a0f14”
+},
+onClick: () => setOpen(o => !o)
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+color: “#555”
+}
+}, proxyUrl ? /*#**PURE***/React.createElement(“span”, {
+style: {
+color: “#00ff88”
+}
+}, “\u2713 Proxy configured”) : “⚙️ CORS proxy (only needed if Connect fails)”), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+color: “#444”
+}
+}, open ? “▲” : “▼”)), open && /*#**PURE***/React.createElement(“div”, {
+style: {
+padding: “0 14px 14px”,
+background: “#0a0f14”,
+display: “flex”,
+flexDirection: “column”,
+gap: 8
+}
+}, /*#**PURE***/React.createElement(“p”, {
+style: {
+fontSize: 11,
+color: “#555”,
+margin: 0,
+lineHeight: 1.6
+}
+}, “If Connect fails, deploy the free Cloudflare Worker and paste its .workers.dev URL here.”), /*#**PURE***/React.createElement(“input”, {
+style: {
+background: “#0e141b”,
+border: “1px solid #1a2230”,
+borderRadius: 8,
+padding: “9px 12px”,
+color: “#fff”,
+fontSize: 13,
+fontFamily: “inherit”,
+outline: “none”
+},
+type: “url”,
+placeholder: “https://your-worker.workers.dev”,
+value: proxyUrl,
+onChange: e => setProxyUrl(e.target.value)
+}), /*#**PURE***/React.createElement(SetupGuide, null)));
 }
 
 // ── Setup Guide ───────────────────────────────────────────────────────────────
-function SetupGuide({expanded=false}) {
-const [open,setOpen] = useState(expanded);
-const [copied,setCopied] = useState(false);
-const copy = () => { navigator.clipboard.writeText(WORKER_CODE).then(()=>{setCopied(true);setTimeout(()=>setCopied(false),2000);}); };
-return (
-<div style={{background:”#080c10”,border:“1px solid #1a2230”,borderRadius:10,overflow:“hidden”}}>
-<div style={{display:“flex”,alignItems:“center”,justifyContent:“space-between”,padding:“12px 14px”,cursor:“pointer”}} onClick={()=>setOpen(o=>!o)}>
-<span style={{fontSize:12,fontWeight:700,color:”#aaa”}}>🛠 Proxy Setup (2 min, free)</span>
-<span style={{fontSize:12,color:”#555”}}>{open?“▲”:“▼”}</span>
-</div>
-{open && (
-<div style={{padding:“0 14px 14px”,display:“flex”,flexDirection:“column”,gap:8}}>
-{[[“1”,“Go to”,“workers.cloudflare.com”,“https://workers.cloudflare.com”,“→ free account”],[“2”,“Click”,“Create Worker”,””,”, paste code below”],[“3”,“Click Deploy, copy the”,”*.workers.dev URL”,””,””],[“4”,“Paste that URL in the Proxy field above”,””,””,””]].map(([n,pre,link,href,post])=>(
-<div key={n} style={{display:“flex”,gap:8}}>
-<span style={{color:”#00ff88”,fontWeight:800,fontSize:11,flexShrink:0}}>{n}.</span>
-<span style={{fontSize:11,color:”#555”,lineHeight:1.6}}>{pre} {href?<a href={href} target=”_blank” rel=“noreferrer” style={{color:”#00ff88”,textDecoration:“none”}}>{link}</a>:<strong style={{color:”#aaa”}}>{link}</strong>} {post}</span>
-</div>
-))}
-<div style={{position:“relative”}}>
-<div style={{background:”#050709”,border:“1px solid #111820”,borderRadius:8,padding:“10px 12px”,fontSize:9,color:”#555”,fontFamily:“monospace”,lineHeight:1.7,maxHeight:120,overflowY:“auto”,whiteSpace:“pre-wrap”}}>{WORKER_CODE}</div>
-<button onClick={copy} style={{position:“absolute”,top:8,right:8,background:copied?”#00ff8820”:”#111820”,border:`1px solid ${copied?"#00ff8844":"#222"}`,color:copied?”#00ff88”:”#666”,borderRadius:5,padding:“4px 8px”,fontSize:10,cursor:“pointer”,fontFamily:“inherit”}}>{copied?“✓ Copied”:“Copy”}</button>
-</div>
-</div>
-)}
-</div>
-);
+function SetupGuide(_ref23) {
+let {
+expanded = false
+} = _ref23;
+const [open, setOpen] = useState(expanded);
+const [copied, setCopied] = useState(false);
+const copy = () => {
+navigator.clipboard.writeText(WORKER_CODE).then(() => {
+setCopied(true);
+setTimeout(() => setCopied(false), 2000);
+});
+};
+return /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#080c10”,
+border: “1px solid #1a2230”,
+borderRadius: 10,
+overflow: “hidden”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+display: “flex”,
+alignItems: “center”,
+justifyContent: “space-between”,
+padding: “12px 14px”,
+cursor: “pointer”
+},
+onClick: () => setOpen(o => !o)
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 12,
+fontWeight: 700,
+color: “#aaa”
+}
+}, “\uD83D\uDEE0 Proxy Setup (2 min, free)”), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 12,
+color: “#555”
+}
+}, open ? “▲” : “▼”)), open && /*#**PURE***/React.createElement(“div”, {
+style: {
+padding: “0 14px 14px”,
+display: “flex”,
+flexDirection: “column”,
+gap: 8
+}
+}, [[“1”, “Go to”, “workers.cloudflare.com”, “https://workers.cloudflare.com”, “→ free account”], [“2”, “Click”, “Create Worker”, “”, “, paste code below”], [“3”, “Click Deploy, copy the”, “*.workers.dev URL”, “”, “”], [“4”, “Paste that URL in the Proxy field above”, “”, “”, “”]].map(_ref24 => {
+let [n, pre, link, href, post] = _ref24;
+return /*#**PURE***/React.createElement(“div”, {
+key: n,
+style: {
+display: “flex”,
+gap: 8
+}
+}, /*#**PURE***/React.createElement(“span”, {
+style: {
+color: “#00ff88”,
+fontWeight: 800,
+fontSize: 11,
+flexShrink: 0
+}
+}, n, “.”), /*#**PURE***/React.createElement(“span”, {
+style: {
+fontSize: 11,
+color: “#555”,
+lineHeight: 1.6
+}
+}, pre, “ “, href ? /*#**PURE***/React.createElement(“a”, {
+href: href,
+target: “_blank”,
+rel: “noreferrer”,
+style: {
+color: “#00ff88”,
+textDecoration: “none”
+}
+}, link) : /*#**PURE***/React.createElement(“strong”, {
+style: {
+color: “#aaa”
+}
+}, link), “ “, post));
+}), /*#**PURE***/React.createElement(“div”, {
+style: {
+position: “relative”
+}
+}, /*#**PURE***/React.createElement(“div”, {
+style: {
+background: “#050709”,
+border: “1px solid #111820”,
+borderRadius: 8,
+padding: “10px 12px”,
+fontSize: 9,
+color: “#555”,
+fontFamily: “monospace”,
+lineHeight: 1.7,
+maxHeight: 120,
+overflowY: “auto”,
+whiteSpace: “pre-wrap”
+}
+}, WORKER_CODE), /*#**PURE***/React.createElement(“button”, {
+onClick: copy,
+style: {
+position: “absolute”,
+top: 8,
+right: 8,
+background: copied ? “#00ff8820” : “#111820”,
+border: `1px solid ${copied ? "#00ff8844" : "#222"}`,
+color: copied ? “#00ff88” : “#666”,
+borderRadius: 5,
+padding: “4px 8px”,
+fontSize: 10,
+cursor: “pointer”,
+fontFamily: “inherit”
+}
+}, copied ? “✓ Copied” : “Copy”))));
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const S = {
-wrap:     { minHeight:“100vh”, background:”#06080b”, display:“flex”, alignItems:“center”, justifyContent:“center”, padding:16, fontFamily:”‘JetBrains Mono’,‘Courier New’,monospace” },
-card:     { width:“100%”, maxWidth:420, background:”#0a0f14”, border:“1px solid #1a2230”, borderRadius:18, padding:24, display:“flex”, flexDirection:“column”, gap:14 },
-logoRow:  { display:“flex”, alignItems:“center”, gap:12 },
-logoK:    { fontSize:46, fontWeight:900, color:”#00ff88”, fontFamily:“Georgia,serif”, lineHeight:1 },
-logoTitle:{ fontSize:22, fontWeight:800, color:”#fff” },
-badge:    col => ({ fontSize:10, fontWeight:700, background:col+“15”, color:col, borderRadius:4, padding:“1px 7px”, verticalAlign:“middle”, marginLeft:4 }),
-logoSub:  { fontSize:10, color:”#333”, marginTop:3 },
-field:    { display:“flex”, flexDirection:“column”, gap:5 },
-lbl:      { fontSize:10, color:”#444”, textTransform:“uppercase”, letterSpacing:1 },
-inp:      { background:”#0e141b”, border:“1px solid #1a2230”, borderRadius:8, padding:“10px 14px”, color:”#fff”, fontSize:14, fontFamily:“inherit”, outline:“none” },
-errBox:   { background:”#1a0505”, border:“1px solid #ff6b6b33”, borderRadius:8, padding:“10px 14px”, color:”#ff6b6b”, fontSize:12 },
-btnG:     { background:”#00ff88”, color:”#001409”, fontWeight:800, border:“none”, borderRadius:10, padding:“13px 20px”, fontSize:14, cursor:“pointer”, fontFamily:“inherit” },
-btnGhost: { background:“transparent”, color:”#444”, border:“1px solid #1a2230”, borderRadius:10, padding:“11px 20px”, fontSize:13, cursor:“pointer”, fontFamily:“inherit” },
-btnTrade: { background:”#00ff8812”, border:“1px solid #00ff8830”, color:”#00ff88”, borderRadius:7, padding:“7px 12px”, fontSize:11, fontWeight:700, cursor:“pointer”, fontFamily:“inherit” },
-btnWeather:{ background:”#38bdf812”, border:“1px solid #38bdf830”, color:”#38bdf8”, borderRadius:7, padding:“7px 10px”, fontSize:11, fontWeight:700, cursor:“pointer”, fontFamily:“inherit” },
-fine:     { color:”#2a2a2a”, fontSize:10, textAlign:“center”, margin:0, lineHeight:1.5 },
-shell:    { display:“flex”, flexDirection:“column”, height:“100vh”, background:”#06080b”, fontFamily:”‘JetBrains Mono’,‘Courier New’,monospace”, color:”#fff”, maxWidth:480, margin:“0 auto” },
-hdr:      { display:“flex”, alignItems:“center”, justifyContent:“space-between”, padding:“10px 14px”, background:”#0a0f14”, borderBottom:“1px solid #141c26”, flexShrink:0 },
-nav:      { display:“flex”, background:”#0a0f14”, borderTop:“1px solid #141c26”, flexShrink:0 },
-navBtn:   { flex:1, display:“flex”, flexDirection:“column”, alignItems:“center”, gap:2, padding:“9px 0 7px”, background:“none”, border:“none”, color:”#2a2a2a”, cursor:“pointer”, fontFamily:“inherit” },
-page:     { padding:“14px 14px 24px”, display:“flex”, flexDirection:“column”, gap:12 },
-secH:     { fontSize:9, color:”#2a2a2a”, textTransform:“uppercase”, letterSpacing:2, marginTop:4 },
-empty:    { color:”#2a2a2a”, textAlign:“center”, padding:“32px 20px”, fontSize:13, lineHeight:1.8 },
-pnlCard:  { background:“linear-gradient(135deg,#0a0f14,#0f1620)”, border:“1px solid #1a2230”, borderRadius:14, padding:“18px 20px” },
-toggle:   { width:50, height:26, borderRadius:13, cursor:“pointer”, position:“relative”, transition:“all 0.3s”, flexShrink:0 },
-thumb:    { position:“absolute”, top:3, width:20, height:20, borderRadius:“50%”, background:”#fff”, transition:“transform 0.3s” },
+wrap: {
+minHeight: “100vh”,
+background: “#06080b”,
+display: “flex”,
+alignItems: “center”,
+justifyContent: “center”,
+padding: 16,
+fontFamily: “‘JetBrains Mono’,‘Courier New’,monospace”
+},
+card: {
+width: “100%”,
+maxWidth: 420,
+background: “#0a0f14”,
+border: “1px solid #1a2230”,
+borderRadius: 18,
+padding: 24,
+display: “flex”,
+flexDirection: “column”,
+gap: 14
+},
+logoRow: {
+display: “flex”,
+alignItems: “center”,
+gap: 12
+},
+logoK: {
+fontSize: 46,
+fontWeight: 900,
+color: “#00ff88”,
+fontFamily: “Georgia,serif”,
+lineHeight: 1
+},
+logoTitle: {
+fontSize: 22,
+fontWeight: 800,
+color: “#fff”
+},
+badge: col => ({
+fontSize: 10,
+fontWeight: 700,
+background: col + “15”,
+color: col,
+borderRadius: 4,
+padding: “1px 7px”,
+verticalAlign: “middle”,
+marginLeft: 4
+}),
+logoSub: {
+fontSize: 10,
+color: “#333”,
+marginTop: 3
+},
+field: {
+display: “flex”,
+flexDirection: “column”,
+gap: 5
+},
+lbl: {
+fontSize: 10,
+color: “#444”,
+textTransform: “uppercase”,
+letterSpacing: 1
+},
+inp: {
+background: “#0e141b”,
+border: “1px solid #1a2230”,
+borderRadius: 8,
+padding: “10px 14px”,
+color: “#fff”,
+fontSize: 14,
+fontFamily: “inherit”,
+outline: “none”
+},
+errBox: {
+background: “#1a0505”,
+border: “1px solid #ff6b6b33”,
+borderRadius: 8,
+padding: “10px 14px”,
+color: “#ff6b6b”,
+fontSize: 12
+},
+btnG: {
+background: “#00ff88”,
+color: “#001409”,
+fontWeight: 800,
+border: “none”,
+borderRadius: 10,
+padding: “13px 20px”,
+fontSize: 14,
+cursor: “pointer”,
+fontFamily: “inherit”
+},
+btnGhost: {
+background: “transparent”,
+color: “#444”,
+border: “1px solid #1a2230”,
+borderRadius: 10,
+padding: “11px 20px”,
+fontSize: 13,
+cursor: “pointer”,
+fontFamily: “inherit”
+},
+btnTrade: {
+background: “#00ff8812”,
+border: “1px solid #00ff8830”,
+color: “#00ff88”,
+borderRadius: 7,
+padding: “7px 12px”,
+fontSize: 11,
+fontWeight: 700,
+cursor: “pointer”,
+fontFamily: “inherit”
+},
+btnWeather: {
+background: “#38bdf812”,
+border: “1px solid #38bdf830”,
+color: “#38bdf8”,
+borderRadius: 7,
+padding: “7px 10px”,
+fontSize: 11,
+fontWeight: 700,
+cursor: “pointer”,
+fontFamily: “inherit”
+},
+fine: {
+color: “#2a2a2a”,
+fontSize: 10,
+textAlign: “center”,
+margin: 0,
+lineHeight: 1.5
+},
+shell: {
+display: “flex”,
+flexDirection: “column”,
+height: “100vh”,
+background: “#06080b”,
+fontFamily: “‘JetBrains Mono’,‘Courier New’,monospace”,
+color: “#fff”,
+maxWidth: 480,
+margin: “0 auto”
+},
+hdr: {
+display: “flex”,
+alignItems: “center”,
+justifyContent: “space-between”,
+padding: “10px 14px”,
+background: “#0a0f14”,
+borderBottom: “1px solid #141c26”,
+flexShrink: 0
+},
+nav: {
+display: “flex”,
+background: “#0a0f14”,
+borderTop: “1px solid #141c26”,
+flexShrink: 0
+},
+navBtn: {
+flex: 1,
+display: “flex”,
+flexDirection: “column”,
+alignItems: “center”,
+gap: 2,
+padding: “9px 0 7px”,
+background: “none”,
+border: “none”,
+color: “#2a2a2a”,
+cursor: “pointer”,
+fontFamily: “inherit”
+},
+page: {
+padding: “14px 14px 24px”,
+display: “flex”,
+flexDirection: “column”,
+gap: 12
+},
+secH: {
+fontSize: 9,
+color: “#2a2a2a”,
+textTransform: “uppercase”,
+letterSpacing: 2,
+marginTop: 4
+},
+empty: {
+color: “#2a2a2a”,
+textAlign: “center”,
+padding: “32px 20px”,
+fontSize: 13,
+lineHeight: 1.8
+},
+pnlCard: {
+background: “linear-gradient(135deg,#0a0f14,#0f1620)”,
+border: “1px solid #1a2230”,
+borderRadius: 14,
+padding: “18px 20px”
+},
+toggle: {
+width: 50,
+height: 26,
+borderRadius: 13,
+cursor: “pointer”,
+position: “relative”,
+transition: “all 0.3s”,
+flexShrink: 0
+},
+thumb: {
+position: “absolute”,
+top: 3,
+width: 20,
+height: 20,
+borderRadius: “50%”,
+background: “#fff”,
+transition: “transform 0.3s”
+}
 };
+try {
 ReactDOM.createRoot(document.getElementById(‘root’)).render(
 React.createElement(KalshiTrader, null)
 );
+} catch(e) {
+document.getElementById(‘root’).innerHTML =
+‘<div style="color:#ff6b6b;padding:24px;font-family:monospace;font-size:13px;background:#06080b;min-height:100vh">’ +
+‘<div style="font-size:18px;margin-bottom:12px">⚠ Render Error</div>’ +
+‘<div style="color:#888">’ + e.message + ‘</div></div>’;
+}
 </script>
 
 </body>
