@@ -21,7 +21,7 @@
   <div id="root"></div>
   <script type="text/babel">
     const { useState, useEffect, useCallback, useRef } = React;
- 
+
 // ─── Cloudflare Worker (user deploys once — stays a simple CORS proxy) ────────
 const WORKER_CODE = `// Kalshi CORS Proxy — deploy at workers.cloudflare.com (free)
 // IMPORTANT: If you deployed this before, redeploy with this exact code.
@@ -51,11 +51,11 @@ export default {
     });
   },
 };`;
- 
+
 // ─── RSA-PSS signing via Web Crypto API ──────────────────────────────────────
 // Web Crypto only accepts PKCS#8 ("BEGIN PRIVATE KEY").
 // Kalshi sometimes gives PKCS#1 ("BEGIN RSA PRIVATE KEY") — convert it first.
- 
+
 function asn1Len(len) {
   if (len < 0x80) return new Uint8Array([len]);
   if (len < 0x100) return new Uint8Array([0x81, len]);
@@ -79,7 +79,7 @@ function pkcs1ToPkcs8(der) {
   const octet     = asn1Wrap(0x04, der);
   return asn1Wrap(0x30, concatU8(version, rsaOid, octet));
 }
- 
+
 async function importPrivateKey(pem) {
   // Accept: PKCS#8 ("BEGIN PRIVATE KEY"), PKCS#1 ("BEGIN RSA PRIVATE KEY"), or raw base64
   const isPkcs1 = pem.includes("RSA PRIVATE KEY");
@@ -96,25 +96,25 @@ async function importPrivateKey(pem) {
     false, ["sign"]
   );
 }
- 
+
 async function rsaSign(cryptoKey, timestamp, method, pathWithoutQuery) {
   const msg = new TextEncoder().encode(`${timestamp}${method}${pathWithoutQuery}`);
   const sig = await crypto.subtle.sign({ name: "RSA-PSS", saltLength: 32 }, cryptoKey, msg);
   return btoa(String.fromCharCode(...new Uint8Array(sig)));
 }
- 
+
 // ─── Kalshi API layer ─────────────────────────────────────────────────────────
 const KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2";
 let _proxyBase  = "";
 let _keyId      = "";
 let _cryptoKey  = null;   // CryptoKey — set after successful import
- 
+
 function setProxy(url) { _proxyBase = url.replace(/\/+$/, ""); }
 async function setCredentials(keyId, pemText) {
   _keyId     = keyId.trim();
   _cryptoKey = await importPrivateKey(pemText);
 }
- 
+
 async function kalshiReq(path, method = "GET", body = null) {
   const base  = _proxyBase || KALSHI_BASE;
   const ts    = Date.now().toString();
@@ -129,7 +129,7 @@ async function kalshiReq(path, method = "GET", body = null) {
   const opts = { method, headers: h };
   if (!_proxyBase) opts.mode = "cors";
   if (body) opts.body = JSON.stringify(body);
- 
+
   let res;
   try {
     res = await fetch(`${base}${path}`, opts);
@@ -140,7 +140,7 @@ async function kalshiReq(path, method = "GET", body = null) {
     }
     throw e;
   }
- 
+
   if (!res.ok) {
     // Try to get the actual Kalshi error text — show it verbatim so nothing is hidden
     const rawText = await res.text().catch(() => "");
@@ -153,7 +153,7 @@ async function kalshiReq(path, method = "GET", body = null) {
   }
   return res.json();
 }
- 
+
 // Normalize markets: handle both old integer-cents fields and new _dollars strings
 function normalizeMarket(m) {
   const d2c = (d) => d != null ? Math.round(parseFloat(d) * 100) : null;
@@ -166,7 +166,7 @@ function normalizeMarket(m) {
     last_price: m.last_price ?? d2c(m.last_price_dollars) ?? 50,
   };
 }
- 
+
 const getMarkets   = ()           => kalshiReq(`/markets?limit=100&status=open`).then(d => ({ ...d, markets: (d.markets || []).map(normalizeMarket) }));
 const getBalance   = ()           => kalshiReq("/portfolio/balance");
 const getPositions = ()           => kalshiReq("/portfolio/positions");
@@ -177,7 +177,7 @@ const placeOrder   = (ticker, side, count, price) =>
     no_price:  side === "no"  ? price : 100 - price,
     time_in_force: "immediate_or_cancel",   // replaces deprecated expiration_ts
   });
- 
+
 // ─── AI News Engine ──────────────────────────────────────────────────────────
 async function fetchNewsSignal(marketTitle, marketProb) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -201,17 +201,17 @@ Respond ONLY with valid JSON — no markdown, no preamble:
   const s = clean.indexOf("{"), e = clean.lastIndexOf("}");
   return JSON.parse(clean.slice(s, e + 1));
 }
- 
+
 // ─── Strategy (corrected) ─────────────────────────────────────────────────────
 function daysUntil(iso) { return (new Date(iso) - Date.now()) / 86400000; }
- 
+
 function urgencyMult(days) {
   if (days < 0.5) return 1.5;
   if (days < 1)   return 1.25;
   if (days < 2)   return 1.1;
   return 1.0;
 }
- 
+
 // FIXED: proper Kelly for prediction market contracts
 // b = payout odds (profit per $1 risked), p = estimated win probability
 function kellySize(estWinProb, contractPriceCents, fraction, maxCents, days) {
@@ -223,14 +223,14 @@ function kellySize(estWinProb, contractPriceCents, fraction, maxCents, days) {
   const sized = f * fraction * maxCents * urgencyMult(days);
   return Math.min(Math.round(sized), maxCents);
 }
- 
+
 // Auto-scale exposure every $100 gain from $100 start
 function calcMaxExposure(balanceCents, startCents = 10000) {
   const gain = Math.max(0, balanceCents - startCents);
   const steps = Math.floor(gain / 10000);          // +$50 per $100 gain
   return 5000 + steps * 5000;
 }
- 
+
 // ─── Sports Filter ────────────────────────────────────────────────────────────
 const SPORTS_KEYWORDS = [
   // leagues & orgs
@@ -252,21 +252,21 @@ const SPORTS_KEYWORDS = [
   "soccer","football score","basketball","baseball","hockey","golf score",
   "tennis match","racing","driver wins","team wins","beats","defeats",
 ];
- 
+
 function isSportsMarket(market) {
   const text = `${market.title} ${market.ticker}`.toLowerCase();
   return SPORTS_KEYWORDS.some(kw => text.includes(kw));
 }
- 
+
 function analyzeMarket(market, config, newsData = null) {
   // Hard block: never trade sports markets
   if (isSportsMarket(market)) return null;
- 
+
   const yesBid = market.yes_bid ?? market.last_price ?? 50;
   const yesAsk = market.yes_ask ?? yesBid + 4;
   const noBid  = market.no_bid  ?? (100 - yesAsk);
   const sum    = yesBid + noBid;
- 
+
   // ── 1. ARBITRAGE: YES + NO sum < $1 (guaranteed profit) ──
   // Threshold: 93 — needs 7¢+ gap to clear Kalshi's ~7% fee on winnings
   if (sum <= 93) {
@@ -279,13 +279,13 @@ function analyzeMarket(market, config, newsData = null) {
       why: `Risk-free: YES(${yesBid}¢) + NO(${noBid}¢) = ${sum}¢ < $1`,
     };
   }
- 
+
   const marketMid = (yesBid + (100 - noBid)) / 2;
   const newsAdj   = newsData?.adjustment ?? 0;
   const newsConf  = newsData?.confidence ?? 0;
   const adjProb   = Math.max(3, Math.min(97, marketMid + newsAdj)) / 100;
   const hasStrongNews = newsData && newsConf >= config.newsMinConf && Math.abs(newsAdj) >= 5;
- 
+
   // ── 2. NEWS SIGNAL: strong news shifts fair value ──
   // Only fire when AI confidence ≥ threshold (default 65%)
   if (hasStrongNews) {
@@ -303,7 +303,7 @@ function analyzeMarket(market, config, newsData = null) {
       };
     }
   }
- 
+
   // ── 3. FADE EXTREMES: only with news confirmation ──
   // Don't fade without news support — markets can stay extreme
   if (config.fadeExtremes && hasStrongNews) {
@@ -331,13 +331,13 @@ function analyzeMarket(market, config, newsData = null) {
         };
     }
   }
- 
+
   // ── 4. MARKET MAKING: DISABLED ──
   // Kalshi limit orders don't reliably capture spread — removed
- 
+
   return null;
 }
- 
+
 // ─── Realistic Demo Simulation ───────────────────────────────────────────────
 // The core bug in naive simulation: using our own optimistic edge estimate as
 // the true win probability. That's circular and always prints money.
@@ -345,14 +345,14 @@ function analyzeMarket(market, config, newsData = null) {
 const EDGE_REALIZATION = { ARB: 1.00, NEWS: 0.35, FADE: 0.20 };
 const FILL_RATE        = { ARB: 1.00, NEWS: 0.72, FADE: 0.68 };  // limit orders don't always fill
 const KALSHI_FEE_PCT   = 0.07;  // Kalshi takes ~7% of winning profits
- 
+
 function simulateTrade(signal, priceCents, costCents) {
   const type = signal.signal;
- 
+
   // Simulate fill — limit orders frequently miss on fast-moving markets
   const fillRate = FILL_RATE[type] ?? 0.70;
   if (Math.random() > fillRate) return { filled: false };
- 
+
   // True win probability: market implied + fraction of our claimed edge
   const marketImplied  = priceCents / 100;
   const claimedEdge    = signal.estWinProb - marketImplied;
@@ -360,15 +360,15 @@ function simulateTrade(signal, priceCents, costCents) {
   // Add noise — markets are noisy even when we're right
   const noise          = (Math.random() - 0.5) * 0.06;
   const trueWinProb    = Math.max(0.02, Math.min(0.98, marketImplied + realizedEdge + noise));
- 
+
   const won    = Math.random() < trueWinProb;
   const payout = won ? Math.round(costCents * ((100 - priceCents) / priceCents)) : 0;
   const fee    = won ? Math.round(payout * KALSHI_FEE_PCT) : 0;
   const net    = won ? payout - fee : -costCents;
- 
+
   return { filled: true, won, net, fee, trueWinProb };
 }
- 
+
 // ─── Performance Tracker ─────────────────────────────────────────────────────
 function initStats() {
   return {
@@ -377,7 +377,7 @@ function initStats() {
     FADE: { trades: 0, wins: 0, totalReturn: 0 },
   };
 }
- 
+
 // ─── Mock Data ───────────────────────────────────────────────────────────────
 function mockMarkets() {
   const n = Date.now();
@@ -396,7 +396,7 @@ function mockMarkets() {
     { ticker:"JOBLESS-250k",    title:"Jobless claims under 250k?",       yes_bid:8, yes_ask:13,no_bid:87,last_price:9,  close_time:new Date(n+3.9*864e5).toISOString(), volume:41000  },
   ].sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
 }
- 
+
 // ─── Live Config ($100 account) ───────────────────────────────────────────────
 const LIVE_CFG = {
   startBalanceCents: 10000,   // $100 starting balance
@@ -410,15 +410,44 @@ const LIVE_CFG = {
   stopLossPct:       0.20,    // halt auto-trade if down 20% ($20 on $100)
   maxTradesPerScan:  3,
 };
- 
+
 // ════════════════════════════════════════════════════════════════════════════════
+// localStorage helpers — save/load credentials so user doesn't re-enter them
+const LS_KEY_ID  = "kt_key_id";
+const LS_PEM     = "kt_pem";
+const LS_PROXY   = "kt_proxy";
+
+function loadSaved() {
+  try {
+    return {
+      keyId:    localStorage.getItem(LS_KEY_ID)  || "",
+      pemText:  localStorage.getItem(LS_PEM)     || "",
+      proxyUrl: localStorage.getItem(LS_PROXY)   || "",
+    };
+  } catch (_) { return { keyId: "", pemText: "", proxyUrl: "" }; }
+}
+function saveCredentials(keyId, pemText, proxyUrl) {
+  try {
+    localStorage.setItem(LS_KEY_ID, keyId);
+    localStorage.setItem(LS_PEM,    pemText);
+    localStorage.setItem(LS_PROXY,  proxyUrl);
+  } catch (_) {}
+}
+function clearCredentials() {
+  try {
+    [LS_KEY_ID, LS_PEM, LS_PROXY].forEach(k => localStorage.removeItem(k));
+  } catch (_) {}
+}
+
 function KalshiTrader() {
+  const saved = loadSaved();
   const [screen, setScreen]       = useState("login");
-  const [keyId, setKeyId]         = useState("");
-  const [pemText, setPemText]     = useState("");
-  const [proxyUrl, setProxyUrl]   = useState("");
+  const [keyId, setKeyId]         = useState(saved.keyId);
+  const [pemText, setPemText]     = useState(saved.pemText);
+  const [proxyUrl, setProxyUrl]   = useState(saved.proxyUrl);
+  const [savedCreds, setSavedCreds] = useState(!!(saved.keyId && saved.pemText));
   const [demo, setDemo]           = useState(false);
-  const [paper, setPaper]         = useState(false); // real data, simulated trades
+  const [paper, setPaper]         = useState(false);
   const [loading, setLoading]     = useState(false);
   const [err, setErr]             = useState("");
   const [markets, setMarkets]     = useState([]);
@@ -435,16 +464,16 @@ function KalshiTrader() {
   const scanRef = useRef(null);
   const cdRef   = useRef(null);
   const tradedRef = useRef(new Set()); // tracks tickers traded this session — no re-trading same market
- 
+
   const addLog = useCallback((msg, type = "info") => {
     setLog(l => [{ ts: new Date().toLocaleTimeString(), msg, type }, ...l].slice(0, 200));
   }, []);
- 
+
   // ── Auth ──
   const handleLogin = async () => {
     setLoading(true); setErr("");
     if (proxyUrl.trim()) setProxy(proxyUrl.trim());
- 
+
     // Step 1: import the private key
     try {
       await setCredentials(keyId.trim(), pemText.trim());
@@ -452,10 +481,12 @@ function KalshiTrader() {
       setErr("Couldn't read the private key. Paste the full key Kalshi gave you, including the -----BEGIN----- and -----END----- lines at the top and bottom.");
       setLoading(false); return;
     }
- 
+
     // Step 2: hit Kalshi (through proxy if configured)
     try {
       await getBalance();
+      saveCredentials(keyId.trim(), pemText.trim(), proxyUrl.trim());
+      setSavedCreds(true);
       setScreen("modeselect");
     } catch (e) {
       const msg = e.message || "";
@@ -471,7 +502,7 @@ function KalshiTrader() {
     }
     setLoading(false);
   };
- 
+
   const handlePaper = () => {
     setPaper(true); setDemo(false);
     setBalance(10000); // $100 virtual starting balance
@@ -480,13 +511,13 @@ function KalshiTrader() {
     addLog("Paper trading active — real Kalshi markets, simulated orders, $100 virtual balance", "warn");
     addLog("Edge realization: ARB 100% · NEWS 35% · FADE 20% · 7% fee · 70% fill rate", "warn");
   };
- 
+
   const handleGoLive = () => {
     setPaper(false); setDemo(false);
     setScreen("dash");
     addLog("⚡ LIVE MODE — real orders will be placed on Kalshi", "error");
   };
- 
+
   const handleDemo = () => {
     setDemo(true);
     setBalance(10000);
@@ -495,7 +526,7 @@ function KalshiTrader() {
     tradedRef.current.clear();
     addLog("Demo mode: $100 balance · realistic edge realization (ARB 100%, NEWS 35%, FADE 20%) · 7% Kalshi fees · 70% fill rate", "warn");
   };
- 
+
   // Expire demo markets as close_time passes, refresh with new ones
   useEffect(() => {
     if (!demo) return;
@@ -517,7 +548,7 @@ function KalshiTrader() {
     }, 10000); // check every 10s
     return () => clearInterval(interval);
   }, [demo, addLog]);
- 
+
   // ── Fetch ──
   const fetchAll = useCallback(async () => {
     if (demo) return; // demo uses mock data only — paper fetches real Kalshi markets
@@ -531,9 +562,9 @@ function KalshiTrader() {
       setBalance(bData.balance || 0);
     } catch (e) { addLog(`Fetch error: ${e.message}`, "error"); }
   }, [demo, config.daysWindow, addLog]);
- 
+
   useEffect(() => { if (!demo && screen !== "login") fetchAll(); }, [demo, screen, fetchAll]);
- 
+
   // ── News ──
   const fetchNews = useCallback(async (ticker, title, prob) => {
     setNewsCache(c => ({ ...c, [ticker]: { loading: true, data: null } }));
@@ -546,7 +577,7 @@ function KalshiTrader() {
       addLog(`News error: ${e.message}`, "error");
     }
   }, [addLog]);
- 
+
   // ── Stop-loss check ──
   const checkStopLoss = useCallback((bal) => {
     const floor = config.startBalanceCents * (1 - config.stopLossPct);
@@ -558,37 +589,37 @@ function KalshiTrader() {
     }
     return false;
   }, [config.startBalanceCents, config.stopLossPct, addLog]);
- 
+
   // ── Auto-trade scan ──
   const runScan = useCallback(async () => {
     if (!autoOn || stopLossHit) return;
     const currentBal = balance ?? config.startBalanceCents;
     if (checkStopLoss(currentBal)) return;
- 
+
     const dynamicExposure = calcMaxExposure(currentBal, config.startBalanceCents);
     addLog(`Scanning… exposure cap: $${(dynamicExposure / 100).toFixed(0)}`, "info");
- 
+
     const eligible = markets
       .filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
       .sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
- 
+
     let placed = 0;
     for (const m of eligible) {
       if (placed >= config.maxTradesPerScan) break;
       const nc = newsCache[m.ticker]?.data ?? null;
       const signal = analyzeMarket(m, config, nc);
       if (!signal || signal.quality < 60) continue;
- 
+
       // Never trade the same market twice in a session — in reality you hold a position until expiry
       if (tradedRef.current.has(m.ticker)) continue;
- 
+
       const days = daysUntil(m.close_time);
       const price = signal.side === "no" ? m.no_bid : m.yes_bid ?? m.last_price ?? 50;
       const cost = kellySize(signal.estWinProb, price, config.kellyFraction, config.maxBetCents, days);
       if (cost < 50) { addLog(`Skip ${m.ticker}: bet size too small`, "info"); continue; }
- 
+
       addLog(`[${signal.signal}] ${m.title.slice(0, 40)} | bet $${(cost/100).toFixed(2)} | ${signal.label}`, "trade");
- 
+
       if (demo || paper) {
         const sim = simulateTrade(signal, price, cost);
         if (!sim.filled) {
@@ -620,7 +651,7 @@ function KalshiTrader() {
     }
     if (placed === 0) addLog("No qualifying signals this scan", "info");
   }, [autoOn, stopLossHit, balance, config, markets, newsCache, demo, paper, checkStopLoss, addLog]);
- 
+
   useEffect(() => {
     if (autoOn && !stopLossHit) {
       runScan();
@@ -632,7 +663,7 @@ function KalshiTrader() {
     }
     return () => { clearInterval(scanRef.current); clearInterval(cdRef.current); };
   }, [autoOn, stopLossHit, config.scanIntervalSec, runScan]);
- 
+
   // ── Computed ──
   const eligible = markets
     .filter(m => { const d = daysUntil(m.close_time); return d > 0 && d < config.daysWindow; })
@@ -647,7 +678,7 @@ function KalshiTrader() {
   const gainToNext  = Math.max(0, 10000 - ((currentBal - config.startBalanceCents) % 10000));
   const fmt$        = c => `$${(c / 100).toFixed(2)}`;
   const winRate     = pnl.trades > 0 ? ((pnl.wins / pnl.trades) * 100).toFixed(0) : "–";
- 
+
   const tabs = [
     { id: "dash",      icon: "⚡", label: "Dash"     },
     { id: "markets",   icon: "📊", label: "Markets"  },
@@ -655,12 +686,12 @@ function KalshiTrader() {
     { id: "eval",      icon: "📈", label: "Eval"     },
     { id: "settings",  icon: "⚙️", label: "Settings" },
   ];
- 
+
   // ══════════ LOGIN ══════════
   if (screen === "login") return (
     <div style={S.wrap}>
       <div style={{ ...S.card, maxWidth: 420 }}>
- 
+
         {/* Logo */}
         <div style={S.logoRow}>
           <span style={S.logoK}>K</span>
@@ -669,69 +700,91 @@ function KalshiTrader() {
             <div style={S.logoSub}>Prediction market auto-trader</div>
           </div>
         </div>
- 
-        {/* Step 1 — get the key from Kalshi */}
-        <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"12px 14px" }}>
-          <div style={{ fontSize:11, fontWeight:700, color:"#00ff88", marginBottom:8 }}>Step 1 — Get your API key from Kalshi</div>
-          <div style={{ fontSize:12, color:"#666", lineHeight:1.7 }}>
-            Go to{" "}
-            <a href="https://kalshi.com/account/profile" target="_blank" rel="noreferrer"
-              style={{ color:"#00ff88", textDecoration:"none", fontWeight:700 }}>
-              kalshi.com → Profile → API Keys
-            </a>
-            {" "}and click <strong style={{ color:"#ccc" }}>Generate New API Key</strong>.
-            Kalshi will show you a <strong style={{ color:"#ccc" }}>Key ID</strong> and a{" "}
-            <strong style={{ color:"#ccc" }}>Private Key</strong> — copy both.
-            The private key is only shown once.
-          </div>
-        </div>
- 
-        {/* Step 2 — paste here */}
-        <div style={{ fontSize:11, fontWeight:700, color:"#aaa" }}>Step 2 — Paste them here</div>
- 
-        <div style={S.field}>
-          <label style={S.lbl}>Key ID</label>
-          <input style={S.inp} type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-            value={keyId} onChange={e => setKeyId(e.target.value)} />
-        </div>
- 
-        <div style={S.field}>
-          <label style={S.lbl}>Private Key</label>
-          <textarea style={{ ...S.inp, height:100, resize:"vertical", fontSize:11, lineHeight:1.6 }}
-            placeholder={"-----BEGIN PRIVATE KEY-----\n  or\n-----BEGIN RSA PRIVATE KEY-----\n(both formats work)"}
-            value={pemText} onChange={e => setPemText(e.target.value)} />
-        </div>
- 
-        {err && (
-          <div style={S.errBox}>
-            <div style={{ fontWeight: 700, marginBottom: 4 }}>Error</div>
-            <div style={{ fontSize: 11, lineHeight: 1.6, wordBreak: "break-all" }}>{err}</div>
-            {err.includes("401") || err.includes("403") || err.includes("Unauthorized") || err.includes("forbidden") ? (
-              <div style={{ marginTop: 8, fontSize: 11, color: "#ff9966", lineHeight: 1.6 }}>
-                💡 Auth rejected — verify your Key ID and private key are from the <strong>same generated pair</strong> on Kalshi. Try generating a fresh key pair.
+
+        {/* SAVED CREDENTIALS — quick connect */}
+        {savedCreds && !err ? (
+          <>
+            <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"14px 16px" }}>
+              <div style={{ fontSize:12, fontWeight:700, color:"#00ff88", marginBottom:4 }}>Welcome back</div>
+              <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>
+                Key ID: <span style={{ color:"#888" }}>{keyId.slice(0,8)}…{keyId.slice(-4)}</span><br/>
+                Proxy: <span style={{ color:"#888" }}>{proxyUrl || "none"}</span>
               </div>
-            ) : err.includes("proxy") || err.includes("Worker") ? (
-              <div style={{ marginTop: 8, fontSize: 11, color: "#ff9966", lineHeight: 1.6 }}>
-                💡 Open your Worker on workers.cloudflare.com → Edit → make sure the URL inside says <code>api.elections.kalshi.com</code> → Deploy.
+            </div>
+            <button style={S.btnG} onClick={handleLogin} disabled={loading}>
+              {loading ? "Connecting…" : "Connect →"}
+            </button>
+            <button style={S.btnGhost} onClick={() => { setSavedCreds(false); setErr(""); }}>
+              Use different credentials
+            </button>
+            {err && (
+              <div style={S.errBox}>
+                <div style={{ fontWeight:700, marginBottom:4 }}>Error</div>
+                <div style={{ fontSize:11, lineHeight:1.6, wordBreak:"break-all" }}>{err}</div>
               </div>
-            ) : null}
-          </div>
+            )}
+            <button style={S.btnGhost} onClick={handleDemo}>🎮 Try Demo instead</button>
+          </>
+        ) : (
+          <>
+            {/* Step 1 — get the key from Kalshi */}
+            <div style={{ background:"#0a1a0f", border:"1px solid #00ff8820", borderRadius:10, padding:"12px 14px" }}>
+              <div style={{ fontSize:11, fontWeight:700, color:"#00ff88", marginBottom:8 }}>Step 1 — Get your API key from Kalshi</div>
+              <div style={{ fontSize:12, color:"#666", lineHeight:1.7 }}>
+                Go to{" "}
+                <a href="https://kalshi.com/account/profile" target="_blank" rel="noreferrer"
+                  style={{ color:"#00ff88", textDecoration:"none", fontWeight:700 }}>
+                  kalshi.com → Profile → API Keys
+                </a>
+                {" "}and click <strong style={{ color:"#ccc" }}>Generate New API Key</strong>.
+                Kalshi shows you a <strong style={{ color:"#ccc" }}>Key ID</strong> and a{" "}
+                <strong style={{ color:"#ccc" }}>Private Key</strong> — copy both.
+                The private key is only shown once.
+              </div>
+            </div>
+
+            <div style={{ fontSize:11, fontWeight:700, color:"#aaa" }}>Step 2 — Paste them here</div>
+
+            <div style={S.field}>
+              <label style={S.lbl}>Key ID</label>
+              <input style={S.inp} type="text" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                value={keyId} onChange={e => setKeyId(e.target.value)} />
+            </div>
+
+            <div style={S.field}>
+              <label style={S.lbl}>Private Key</label>
+              <textarea style={{ ...S.inp, height:100, resize:"vertical", fontSize:11, lineHeight:1.6 }}
+                placeholder={"-----BEGIN PRIVATE KEY-----\n  or\n-----BEGIN RSA PRIVATE KEY-----\n(both formats work)"}
+                value={pemText} onChange={e => setPemText(e.target.value)} />
+            </div>
+
+            {err && (
+              <div style={S.errBox}>
+                <div style={{ fontWeight:700, marginBottom:4 }}>Error</div>
+                <div style={{ fontSize:11, lineHeight:1.6, wordBreak:"break-all" }}>{err}</div>
+                {(err.includes("401") || err.includes("403") || err.includes("rejected")) && (
+                  <div style={{ marginTop:8, fontSize:11, color:"#ff9966", lineHeight:1.6 }}>
+                    💡 Generate a fresh key pair on kalshi.com → Profile → API Keys.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button style={{ ...S.btnG, opacity: (keyId && pemText) ? 1 : 0.45 }}
+              onClick={handleLogin} disabled={loading || !keyId || !pemText}>
+              {loading ? "Connecting…" : "Connect →"}
+            </button>
+
+            <ProxyField proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} />
+
+            <button style={S.btnGhost} onClick={handleDemo}>🎮 Try Demo (no account needed)</button>
+            <p style={S.fine}>Real-money trading tool — only trade what you can afford to lose.</p>
+          </>
         )}
- 
-        <button style={{ ...S.btnG, opacity: (keyId && pemText) ? 1 : 0.45 }}
-          onClick={handleLogin} disabled={loading || !keyId || !pemText}>
-          {loading ? "Connecting…" : "Connect →"}
-        </button>
- 
-        {/* Proxy URL — collapsed, only needed if CORS blocks */}
-        <ProxyField proxyUrl={proxyUrl} setProxyUrl={setProxyUrl} />
- 
-        <button style={S.btnGhost} onClick={handleDemo}>🎮 Try Demo (no account needed)</button>
-        <p style={S.fine}>Real-money trading tool — only trade what you can afford to lose.</p>
       </div>
     </div>
   );
- 
+
   // ══════════ MODE SELECT (shown after real login) ══════════
   if (screen === "modeselect") return (
     <div style={S.wrap}>
@@ -743,7 +796,7 @@ function KalshiTrader() {
             <div style={S.logoSub}>Account connected ✓ — choose trading mode</div>
           </div>
         </div>
- 
+
         {/* Paper trade option */}
         <div style={{ background: "#0a1a0f", border: "2px solid #00ff8833", borderRadius: 14, padding: 18, cursor: "pointer" }}
           onClick={handlePaper}>
@@ -764,7 +817,7 @@ function KalshiTrader() {
           </div>
           <button style={{ ...S.btnG, marginTop: 14, width: "100%" }}>Start Paper Trading →</button>
         </div>
- 
+
         {/* Live option */}
         <div style={{ background: "#1a0a0a", border: "2px solid #ff3b3033", borderRadius: 14, padding: 18, cursor: "pointer" }}
           onClick={handleGoLive}>
@@ -784,12 +837,12 @@ function KalshiTrader() {
           </div>
           <button style={{ ...S.btnGhost, marginTop: 14, width: "100%", color: "#ff6b6b", borderColor: "#ff3b3033" }}>Go Live — Real Money</button>
         </div>
- 
+
         <button style={{ ...S.btnGhost, fontSize: 12 }} onClick={() => { _keyId = ""; _cryptoKey = null; setScreen("login"); }}>← Back</button>
       </div>
     </div>
   );
- 
+
   // ══════════ CORS ERROR SCREEN ══════════
   if (screen === "corserror") return (
     <div style={S.wrap}>
@@ -804,7 +857,7 @@ function KalshiTrader() {
       </div>
     </div>
   );
- 
+
   // ══════════ SHELL ══════════
   return (
     <div style={S.shell}>
@@ -824,15 +877,15 @@ function KalshiTrader() {
           <div style={{ width: 8, height: 8, borderRadius: "50%", background: autoOn && !stopLossHit ? "#00ff88" : "#1a1a1a", boxShadow: autoOn && !stopLossHit ? "0 0 8px #00ff88" : "none" }} />
         </div>
       </div>
- 
+
       <div style={{ flex: 1, overflow: "auto" }}>
         {screen === "dash"     && <DashScreen {...{ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, setStopLossHit, log, countdown, fmt$, config, dynExposure, gainToNext, winRate, currentBal, stats }} />}
         {screen === "markets"  && <MarketsScreen {...{ markets: withSig, fmt$, addLog, demo, paper, setPnl, setStats, setBalance, config, newsCache, fetchNews, tradedRef }} />}
         {screen === "news"     && <NewsScreen {...{ markets: withSig, newsCache, fetchNews }} />}
         {screen === "eval"     && <EvalScreen {...{ stats, pnl, winRate, fmt$, config }} />}
-        {screen === "settings" && <SettingsScreen {...{ config, setConfig, fmt$, onLogout: () => { _keyId = ""; _cryptoKey = null; setPaper(false); setDemo(false); setAutoOn(false); setScreen("login"); } }} />}
+        {screen === "settings" && <SettingsScreen {...{ config, setConfig, fmt$, onLogout: () => { _keyId = ""; _cryptoKey = null; clearCredentials(); setSavedCreds(false); setKeyId(""); setPemText(""); setProxyUrl(""); setPaper(false); setDemo(false); setAutoOn(false); setScreen("login"); } }} />}
       </div>
- 
+
       <div style={S.nav}>
         {tabs.map(t => (
           <button key={t.id} style={{ ...S.navBtn, ...(screen === t.id ? { color: "#00ff88" } : {}) }} onClick={() => setScreen(t.id)}>
@@ -844,7 +897,7 @@ function KalshiTrader() {
     </div>
   );
 }
- 
+
 function Tag({ col, children }) {
   return <span style={{ fontSize: 8, fontWeight: 700, color: col, background: col + "15", border: `1px solid ${col}30`, borderRadius: 3, padding: "2px 5px" }}>{children}</span>;
 }
@@ -852,14 +905,14 @@ function UBadge({ days }) {
   const [col, txt] = days < 0.5 ? ["#ff3b30","⚡ TODAY"] : days < 1 ? ["#ff6b6b",`${(days*24).toFixed(0)}h`] : days < 2 ? ["#f5a623",`~${days.toFixed(1)}d`] : ["#444",`${days.toFixed(1)}d`];
   return <span style={{ fontSize: 9, fontWeight: 700, color: col, background: col+"15", borderRadius: 4, padding: "2px 6px", flexShrink: 0 }}>{txt}</span>;
 }
- 
+
 // ══════════ DASHBOARD ══════════
 function DashScreen({ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, setStopLossHit, log, countdown, fmt$, config, dynExposure, gainToNext, winRate, currentBal, stats }) {
   const total    = pnl.realized + pnl.unrealized;
   const topSigs  = withSig.filter(m => m.signal && m.signal.quality >= 60).slice(0, 3);
   const gainPct  = ((currentBal - config.startBalanceCents) / config.startBalanceCents * 100).toFixed(1);
   const nextStep = gainToNext / 100;
- 
+
   return (
     <div style={S.page}>
       {/* P&L */}
@@ -883,7 +936,7 @@ function DashScreen({ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, se
           ))}
         </div>
       </div>
- 
+
       {/* Exposure Scaler */}
       <div style={{ background: "#0a0f14", border: "1px solid #1a2230", borderRadius: 12, padding: "13px 16px" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -901,7 +954,7 @@ function DashScreen({ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, se
         </div>
         <div style={{ fontSize: 10, color: "#555", marginTop: 5 }}>${nextStep.toFixed(2)} more profit → exposure unlocks to {fmt$(dynExposure + 5000)}</div>
       </div>
- 
+
       {/* Auto-Trade Toggle */}
       <div style={{ background: "#0a0f14", border: `1px solid ${stopLossHit ? "#ff3b3033" : "#1a2230"}`, borderRadius: 12, padding: "13px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div>
@@ -926,7 +979,7 @@ function DashScreen({ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, se
             </div>
         }
       </div>
- 
+
       {/* Stats row */}
       <div style={{ display: "flex", gap: 8 }}>
         {[[eligible.length, "Markets", "#fff"], [withSig.filter(m => m.signal).length, "Signals", "#00ff88"], [Object.values({}).filter ? "–" : "–", "ARB", "#00ff88"]].map(([n, l, c]) => (
@@ -940,7 +993,7 @@ function DashScreen({ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, se
           <div style={{ fontSize: 8, color: "#333", textTransform: "uppercase", marginTop: 2 }}>Stop-loss</div>
         </div>
       </div>
- 
+
       {/* Top signals */}
       {topSigs.length > 0 && <>
         <div style={S.secH}>🔥 Live Signals — soonest expiry first</div>
@@ -958,7 +1011,7 @@ function DashScreen({ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, se
           </div>
         ))}
       </>}
- 
+
       {/* Log */}
       <div style={S.secH}>Activity</div>
       <div style={{ background: "#050709", border: "1px solid #0f1520", borderRadius: 10, padding: "10px 12px", maxHeight: 200, overflowY: "auto" }}>
@@ -972,12 +1025,12 @@ function DashScreen({ pnl, withSig, eligible, autoOn, setAutoOn, stopLossHit, se
     </div>
   );
 }
- 
+
 // ══════════ MARKETS ══════════
 function MarketsScreen({ markets, fmt$, addLog, demo, paper, setPnl, setStats, setBalance, config, newsCache, fetchNews, tradedRef }) {
   const [filter, setFilter] = useState("signals");
   const shown = filter === "signals" ? markets.filter(m => m.signal) : markets;
- 
+
   const doTrade = async (m) => {
     if (!m.signal) return;
     if (demo && tradedRef.current.has(m.ticker)) {
@@ -1006,7 +1059,7 @@ function MarketsScreen({ markets, fmt$, addLog, demo, paper, setPnl, setStats, s
       } catch (e) { addLog(`✗ ${e.message}`, "error"); }
     }
   };
- 
+
   return (
     <div style={S.page}>
       <div style={{ display: "flex", gap: 8 }}>
@@ -1016,9 +1069,9 @@ function MarketsScreen({ markets, fmt$, addLog, demo, paper, setPnl, setStats, s
           </button>
         ))}
       </div>
- 
+
       {shown.length === 0 && <div style={S.empty}>No qualifying signals.<br/>Load AI news for markets to unlock NEWS signals.</div>}
- 
+
       {shown.map(m => {
         const nc = newsCache[m.ticker];
         const blocked = isSportsMarket(m);
@@ -1063,7 +1116,7 @@ function MarketsScreen({ markets, fmt$, addLog, demo, paper, setPnl, setStats, s
     </div>
   );
 }
- 
+
 function NewsSnip({ data }) {
   const sc = { bullish:"#00ff88", bearish:"#ff6b6b", neutral:"#888" };
   return (
@@ -1085,28 +1138,28 @@ function NewsSnip({ data }) {
     </div>
   );
 }
- 
+
 // ══════════ NEWS HUB ══════════
 function NewsScreen({ markets, newsCache, fetchNews }) {
   const loaded   = markets.filter(m => newsCache[m.ticker]?.data).sort((a,b) => a.days - b.days);
   const pending  = markets.filter(m => !newsCache[m.ticker]).sort((a,b) => a.days - b.days);
   const fetching = markets.some(m => newsCache[m.ticker]?.loading);
   const sc = { bullish:"#00ff88", bearish:"#ff6b6b", neutral:"#888" };
- 
+
   return (
     <div style={S.page}>
       <div style={{ background:"linear-gradient(135deg,#080412,#0e0820)", border:"1px solid #c084fc22", borderRadius:14, padding:"16px 18px" }}>
         <div style={{ fontSize:15, fontWeight:800, color:"#c084fc", marginBottom:6 }}>📰 AI News Intelligence</div>
         <div style={{ fontSize:12, color:"#555", lineHeight:1.6 }}>Claude searches live news per market. A confidence ≥65% and ≥5¢ adjustment is required before a NEWS signal is generated. Results are sorted by soonest expiry.</div>
       </div>
- 
+
       {pending.length > 0 && <button style={S.btnG} onClick={() => pending.slice(0,5).forEach(m => fetchNews(m.ticker, m.title, m.yes_bid ?? m.last_price ?? 50))}>
         📰 Analyze Top {Math.min(5, pending.length)} Markets (soonest first)
       </button>}
- 
+
       {fetching && <div style={{ background:"#0a0610", border:"1px solid #c084fc22", borderRadius:8, padding:"11px 14px", fontSize:12, color:"#c084fc" }}>⟳ Fetching live news…</div>}
       {loaded.length === 0 && !fetching && <div style={S.empty}>No news loaded yet. Tap above to start.</div>}
- 
+
       {loaded.map(m => {
         const nc = m && newsCache[m.ticker].data;
         if (!nc) return null;
@@ -1140,7 +1193,7 @@ function NewsScreen({ markets, newsCache, fetchNews }) {
     </div>
   );
 }
- 
+
 // ══════════ STRATEGY EVAL ══════════
 function EvalScreen({ stats, pnl, winRate, fmt$, config }) {
   const strategies = [
@@ -1150,14 +1203,14 @@ function EvalScreen({ stats, pnl, winRate, fmt$, config }) {
   ];
   const total = pnl.trades;
   const roi = config.startBalanceCents > 0 ? ((pnl.realized / config.startBalanceCents) * 100).toFixed(1) : "0.0";
- 
+
   return (
     <div style={S.page}>
       <div style={{ background:"linear-gradient(135deg,#0a0f14,#080c14)", border:"1px solid #1a2230", borderRadius:14, padding:"16px 18px" }}>
         <div style={{ fontSize:15, fontWeight:800, marginBottom:4 }}>Strategy Evaluation</div>
         <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>Honest assessment of each signal type. Market-making was removed — it does not work on Kalshi's structure. Kelly is fixed to account for asymmetric prediction market payouts.</div>
       </div>
- 
+
       {/* Overall stats */}
       <div style={{ display:"flex", gap:8 }}>
         {[
@@ -1172,7 +1225,7 @@ function EvalScreen({ stats, pnl, winRate, fmt$, config }) {
           </div>
         ))}
       </div>
- 
+
       {/* Per-strategy breakdown */}
       {strategies.map(({ key, name, col, desc, strength, strCol }) => {
         const s = stats[key] || { trades:0, wins:0, totalReturn:0 };
@@ -1192,7 +1245,7 @@ function EvalScreen({ stats, pnl, winRate, fmt$, config }) {
           </div>
         );
       })}
- 
+
       {/* Honest limitations */}
       <div style={S.secH}>Known Limitations</div>
       <div style={{ background:"#0a0f14", border:"1px solid #1a2230", borderRadius:12, padding:14 }}>
@@ -1213,7 +1266,7 @@ function EvalScreen({ stats, pnl, winRate, fmt$, config }) {
     </div>
   );
 }
- 
+
 // ══════════ SETTINGS ══════════
 function SettingsScreen({ config, setConfig, fmt$, onLogout }) {
   const set = (k, v) => setConfig(c => ({ ...c, [k]: v }));
@@ -1223,7 +1276,7 @@ function SettingsScreen({ config, setConfig, fmt$, onLogout }) {
         <div style={{ fontSize:12, fontWeight:700, color:"#c084fc", marginBottom:4 }}>Live Config: $100 Account</div>
         <div style={{ fontSize:11, color:"#555", lineHeight:1.6 }}>Starting exposure $50 · Auto-scales +$50 per $100 gain · Stops if account falls 20%</div>
       </div>
- 
+
       <div style={S.secH}>Risk Management</div>
       <div style={{ background:"#0a0f14", border:"1px solid #1a2230", borderRadius:12, overflow:"hidden" }}>
         {[
@@ -1248,7 +1301,7 @@ function SettingsScreen({ config, setConfig, fmt$, onLogout }) {
           );
         })}
       </div>
- 
+
       <div style={S.secH}>Strategy Toggles</div>
       <div style={{ background:"#0a0f14", border:"1px solid #1a2230", borderRadius:12, overflow:"hidden" }}>
         {[
@@ -1262,7 +1315,7 @@ function SettingsScreen({ config, setConfig, fmt$, onLogout }) {
           </div>
         ))}
       </div>
- 
+
       <div style={S.secH}>Scaling Milestones</div>
       <div style={{ background:"#0a0f14", border:"1px solid #1a2230", borderRadius:12, padding:14 }}>
         {[0,1,2,3,4].map(i => {
@@ -1276,14 +1329,14 @@ function SettingsScreen({ config, setConfig, fmt$, onLogout }) {
           );
         })}
       </div>
- 
+
       <button style={{ background:"transparent", color:"#ff6b6b", border:"1px solid #ff6b6b22", borderRadius:10, padding:"12px 20px", fontSize:13, cursor:"pointer", fontFamily:"inherit" }} onClick={onLogout}>
         Disconnect
       </button>
     </div>
   );
 }
- 
+
 // ─── Proxy Field (collapsed — only needed for CORS) ──────────────────────────
 function ProxyField({ proxyUrl, setProxyUrl }) {
   const [open, setOpen] = useState(!!proxyUrl);
@@ -1311,18 +1364,18 @@ function ProxyField({ proxyUrl, setProxyUrl }) {
     </div>
   );
 }
- 
+
 // ─── Setup Guide Component ────────────────────────────────────────────────────
 function SetupGuide({ expanded = false }) {
   const [open, setOpen] = useState(expanded);
   const [copied, setCopied] = useState(false);
- 
+
   const copy = () => {
     navigator.clipboard.writeText(WORKER_CODE).then(() => {
       setCopied(true); setTimeout(() => setCopied(false), 2000);
     });
   };
- 
+
   return (
     <div style={{ background: "#080c10", border: "1px solid #1a2230", borderRadius: 10, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px", cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
@@ -1362,7 +1415,7 @@ function SetupGuide({ expanded = false }) {
     </div>
   );
 }
- 
+
 // ─── Styles ──────────────────────────────────────────────────────────────────
 const S = {
   wrap:    { minHeight:"100vh", background:"#06080b", display:"flex", alignItems:"center", justifyContent:"center", padding:16, fontFamily:"'JetBrains Mono','Courier New',monospace" },
