@@ -215,47 +215,103 @@ function urgencyMult(days) {
 // FIXED: proper Kelly for prediction market contracts
 // b = payout odds (profit per $1 risked), p = estimated win probability
 function kellySize(estWinProb, contractPriceCents, fraction, maxCents, days) {
-  const cost = contractPriceCents / 100;          // e.g. 0.60 for a 60¢ contract
-  const b    = (1 - cost) / cost;                 // payout odds per $ risked
-  const p    = Math.min(0.97, Math.max(0.03, estWinProb));
+  // Guard: price must be >0 and <100 to avoid division by zero / NaN
+  if (!contractPriceCents || contractPriceCents <= 0 || contractPriceCents >= 100) return 0;
+  if (!maxCents || maxCents <= 0) return 0;
+  const cost = contractPriceCents / 100;
+  const b    = (1 - cost) / cost;
+  const p    = Math.min(0.97, Math.max(0.03, estWinProb || 0.5));
   const q    = 1 - p;
-  const f    = Math.max(0, (b * p - q) / b);      // full Kelly fraction
+  const f    = Math.max(0, (b * p - q) / b);
   const sized = f * fraction * maxCents * urgencyMult(days);
-  return Math.min(Math.round(sized), maxCents);
+  const result = Math.min(Math.round(sized), maxCents);
+  return isNaN(result) ? 0 : result;
 }
 
 // Auto-scale exposure every $100 gain from $100 start
 function calcMaxExposure(balanceCents, startCents = 10000) {
+  if (!balanceCents || isNaN(balanceCents)) return 5000;
   const gain = Math.max(0, balanceCents - startCents);
-  const steps = Math.floor(gain / 10000);          // +$50 per $100 gain
+  const steps = Math.floor(gain / 10000);
   return 5000 + steps * 5000;
 }
 
 // ─── Sports Filter ────────────────────────────────────────────────────────────
 const SPORTS_KEYWORDS = [
-  // leagues & orgs
-  "nfl","nba","nhl","mlb","nascar","f1","formula 1","formula one","mls","ncaa",
-  "ufc","mma","boxing","pga","lpga","masters","wimbledon","us open","french open",
-  "australian open","uefa","fifa","champions league","premier league","la liga",
-  "bundesliga","serie a","ligue 1","super bowl","world cup","stanley cup",
-  "world series","nba finals","playoffs","championship",
-  // generic sports terms
-  "game 1","game 2","game 3","game 4","game 5","game 6","game 7",
-  "touchdown","home run","hat trick","slam dunk","field goal",
-  "quarterback","pitcher","goalie","striker","wide receiver",
-  "match winner","set winner","first half","second half","overtime","shootout",
-  // common team/sport names that appear in titles
+  // Leagues & governing bodies
+  "nfl","nba","nhl","mlb","nascar","mls","ncaa","ncaaf","ncaab",
+  "ufc","mma","boxing","pga","lpga","atp","wta","wnba","cfl",
+  "f1","formula 1","formula one","indycar","motogp",
+  "wimbledon","us open","french open","australian open","roland garros",
+  "uefa","fifa","champions league","europa league","premier league",
+  "la liga","bundesliga","serie a","ligue 1","eredivisie",
+  "super bowl","world cup","stanley cup","world series","nba finals",
+  "march madness","college football","bowl game","playoff","playoffs",
+  "championship game","title game","conference final",
+
+  // Sports actions & positions
+  "touchdown","home run","hat trick","slam dunk","field goal","free throw",
+  "quarterback","pitcher","goalie","goalkeeper","striker","wide receiver",
+  "running back","tight end","linebacker","shortstop","outfielder",
+  "match winner","set winner","first half","second half","halftime",
+  "overtime","shootout","penalty kick","extra innings","inning",
+  "three-pointer","slam dunk","fastbreak","power play","face-off",
+
+  // Generic sport identifiers
+  "win the","wins the","win tonight","win today","score","scored",
+  "beats ","beat the","defeats","defeated","vs.","at home","away game",
+  "cover the spread","point spread","moneyline","over/under",
+
+  // NFL teams
   "patriots","chiefs","eagles","cowboys","packers","bears","rams","49ers",
-  "lakers","celtics","warriors","bucks","heat","nets","knicks",
-  "yankees","red sox","dodgers","cubs","astros","mets",
-  "maple leafs","bruins","blackhawks","penguins","rangers",
-  "soccer","football score","basketball","baseball","hockey","golf score",
-  "tennis match","racing","driver wins","team wins","beats","defeats",
+  "seahawks","saints","buccaneers","falcons","panthers","cardinals",
+  "giants","jets","dolphins","bills","ravens","steelers","browns","bengals",
+  "broncos","raiders","chargers","vikings","lions","texans","colts","titans","jaguars",
+
+  // NBA teams
+  "lakers","celtics","warriors","bucks","heat","nets","knicks","76ers",
+  "raptors","nuggets","suns","clippers","mavericks","rockets","spurs",
+  "thunder","blazers","jazz","timberwolves","pelicans","hawks","hornets",
+  "wizards","pistons","cavaliers","pacers","magic","kings","grizzlies",
+
+  // MLB teams
+  "yankees","red sox","dodgers","cubs","astros","mets","braves","cardinals",
+  "giants","phillies","nationals","mariners","rangers","athletics","angels",
+  "blue jays","padres","rockies","diamondbacks","brewers","twins","tigers",
+  "white sox","orioles","rays","royals","pirates","reds","marlins",
+
+  // NHL teams
+  "maple leafs","bruins","blackhawks","penguins","rangers","canadiens",
+  "lightning","capitals","blues","sharks","ducks","kings","flames","oilers",
+  "canucks","senators","sabres","red wings","hurricanes","devils","islanders",
+  "flyers","coyotes","wild","predators","stars","jets","avalanche","golden knights",
+
+  // Sports cities — key differentiator for "yes Pittsburgh" style markets
+  "pittsburgh","cleveland","cincinnati","baltimore","buffalo","nashville",
+  "jacksonville","indianapolis","houston","tennessee","carolina","new england",
+  "green bay","minnesota","detroit","chicago","milwaukee","memphis",
+  "oklahoma city","portland","sacramento","new orleans","salt lake",
+  "san antonio","denver","phoenix","orlando","charlotte","atlanta",
+  "miami","tampa","boston","brooklyn","philadelphia","washington dc",
+  "dallas","kansas city","las vegas","anaheim","san jose","columbus",
+
+  // Sports-specific words
+  "soccer","basketball","baseball","hockey","golf score","tennis match",
+  "racing","driver wins","team wins","team loses","win the series",
+  "nfl week","nba season","mlb season","nhl season","college game",
+  "super bowl mvp","world series mvp","nba mvp","nfl mvp","cy young",
+  "heisman","draft pick","trade deadline","free agent",
 ];
 
 function isSportsMarket(market) {
   const text = `${market.title} ${market.ticker}`.toLowerCase();
-  return SPORTS_KEYWORDS.some(kw => text.includes(kw));
+  // Direct keyword match
+  if (SPORTS_KEYWORDS.some(kw => text.includes(kw))) return true;
+  // Pattern: "yes [City]" or "no [City]" — typical sports market format
+  if (/\b(yes|no)\s+[a-z]+,\s*(yes|no)\s+[a-z]+/i.test(market.title)) return true;
+  // KX prefix with team abbreviations (Kalshi sports tickers)
+  if (/^KX[A-Z]{2,5}(NFL|NBA|MLB|NHL|MLS|NCAA)/i.test(market.ticker)) return true;
+  return false;
 }
 
 function analyzeMarket(market, config, newsData = null) {
@@ -416,6 +472,7 @@ const LIVE_CFG = {
 const LS_KEY_ID  = "kt_key_id";
 const LS_PEM     = "kt_pem";
 const LS_PROXY   = "kt_proxy";
+const LS_AUTO    = "kt_auto_on";
 
 function loadSaved() {
   try {
@@ -423,8 +480,9 @@ function loadSaved() {
       keyId:    localStorage.getItem(LS_KEY_ID)  || "",
       pemText:  localStorage.getItem(LS_PEM)     || "",
       proxyUrl: localStorage.getItem(LS_PROXY)   || "",
+      autoOn:   localStorage.getItem(LS_AUTO)    === "true",
     };
-  } catch (_) { return { keyId: "", pemText: "", proxyUrl: "" }; }
+  } catch (_) { return { keyId: "", pemText: "", proxyUrl: "", autoOn: false }; }
 }
 function saveCredentials(keyId, pemText, proxyUrl) {
   try {
@@ -435,7 +493,7 @@ function saveCredentials(keyId, pemText, proxyUrl) {
 }
 function clearCredentials() {
   try {
-    [LS_KEY_ID, LS_PEM, LS_PROXY].forEach(k => localStorage.removeItem(k));
+    [LS_KEY_ID, LS_PEM, LS_PROXY, LS_AUTO].forEach(k => localStorage.removeItem(k));
   } catch (_) {}
 }
 
@@ -457,7 +515,7 @@ function KalshiTrader() {
   const [log, setLog]             = useState([]);
   const [stats, setStats]         = useState(initStats());
   const [pnl, setPnl]             = useState({ realized: 0, unrealized: 0, trades: 0, wins: 0 });
-  const [autoOn, setAutoOn]       = useState(false);
+  const [autoOn, setAutoOn]       = useState(saved.autoOn);
   const [stopLossHit, setStopLossHit] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [newsCache, setNewsCache] = useState({});
@@ -487,6 +545,7 @@ function KalshiTrader() {
       await getBalance();
       saveCredentials(keyId.trim(), pemText.trim(), proxyUrl.trim());
       setSavedCreds(true);
+      // Default to paper mode on connect — user can switch to live in mode select
       setScreen("modeselect");
     } catch (e) {
       const msg = e.message || "";
@@ -653,6 +712,7 @@ function KalshiTrader() {
   }, [autoOn, stopLossHit, balance, config, markets, newsCache, demo, paper, checkStopLoss, addLog]);
 
   useEffect(() => {
+    try { localStorage.setItem(LS_AUTO, String(autoOn)); } catch (_) {}
     if (autoOn && !stopLossHit) {
       runScan();
       scanRef.current = setInterval(runScan, config.scanIntervalSec * 1000);
