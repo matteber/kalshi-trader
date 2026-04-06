@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-<title>Kalshi Auto Trader</title>
+<title>KAUTO</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html,body,#root{height:100%}
@@ -11,7 +11,7 @@ body{background:#06080b;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFo
 </style>
 </head>
 <body>
-<div id="root"><div style="color:#888;padding:40px;text-align:center">Loading...</div></div>
+<div id="root"><div style="color:#555;padding:40px;text-align:center">Loading...</div></div>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script>
@@ -51,16 +51,15 @@ async function importPrivateKey(pem) {
       name: "RSA-PSS",
       hash: "SHA-256"
     }, false, ["sign"]);
-  } else {
-    b64 = trimmed.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s/g, "");
-    var der2 = Uint8Array.from(atob(b64), function (c) {
-      return c.charCodeAt(0);
-    });
-    return crypto.subtle.importKey("pkcs8", der2, {
-      name: "RSA-PSS",
-      hash: "SHA-256"
-    }, false, ["sign"]);
   }
+  b64 = trimmed.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s/g, "");
+  var der2 = Uint8Array.from(atob(b64), function (c) {
+    return c.charCodeAt(0);
+  });
+  return crypto.subtle.importKey("pkcs8", der2, {
+    name: "RSA-PSS",
+    hash: "SHA-256"
+  }, false, ["sign"]);
 }
 async function rsaSign(key, keyId, method, path) {
   var ts = String(Math.floor(Date.now() / 1000));
@@ -69,10 +68,13 @@ async function rsaSign(key, keyId, method, path) {
     name: "RSA-PSS",
     saltLength: 32
   }, key, msg);
+  var arr = new Uint8Array(sig);
+  var str = "";
+  for (var i = 0; i < arr.length; i++) str += String.fromCharCode(arr[i]);
   return {
     "KALSHI-ACCESS-KEY": keyId,
     "KALSHI-ACCESS-TIMESTAMP": ts,
-    "KALSHI-ACCESS-SIGNATURE": btoa(String.fromCharCode.apply(null, new Uint8Array(sig)))
+    "KALSHI-ACCESS-SIGNATURE": btoa(str)
   };
 }
 
@@ -120,8 +122,6 @@ async function kalshiReq(path, method, body) {
   }
   return res.json();
 }
-
-// Parse dollar string to cents: "0.5600" -> 56
 function d2c(v) {
   if (v == null || v === "") return null;
   var n = Math.round(parseFloat(v) * 100);
@@ -134,7 +134,6 @@ function normalizeMarket(m) {
   var na = d2c(m.no_ask_dollars);
   var lp = d2c(m.last_price_dollars);
   var vol = parseFloat(m.volume_24h_fp || m.volume_fp || "0") || 0;
-  // Fallbacks
   if (yb == null) yb = lp != null ? lp : 50;
   if (ya == null) ya = yb + 4;
   if (nb == null) nb = 100 - ya;
@@ -146,7 +145,6 @@ function normalizeMarket(m) {
     title: m.title || m.yes_sub_title || m.ticker || "?",
     subtitle: m.subtitle || m.yes_sub_title || "",
     close_time: m.close_time || m.latest_expiration_time || "",
-    status: m.status || "",
     yes_bid: yb,
     yes_ask: ya,
     no_bid: nb,
@@ -155,8 +153,6 @@ function normalizeMarket(m) {
     volume: vol
   };
 }
-
-// === Fetch all open markets with pagination ===
 async function fetchMarkets() {
   var all = [];
   var cursor = "";
@@ -166,9 +162,7 @@ async function fetchMarkets() {
     if (cursor) qs += "&cursor=" + encodeURIComponent(cursor);
     var data = await kalshiReq("/markets?" + qs);
     var mkts = data.markets || [];
-    for (var i = 0; i < mkts.length; i++) {
-      all.push(normalizeMarket(mkts[i]));
-    }
+    for (var i = 0; i < mkts.length; i++) all.push(normalizeMarket(mkts[i]));
     cursor = data.cursor || "";
     if (!cursor || mkts.length === 0) break;
     pages++;
@@ -183,24 +177,20 @@ function daysUntil(iso) {
 }
 function analyzeMarket(m, cfg) {
   var days = daysUntil(m.close_time);
-  if (days <= 0 || days > (cfg.daysWindow || 14)) return null;
+  if (days <= 0 || days > cfg.daysWindow) return null;
   var yb = m.yes_bid,
     nb = m.no_bid,
     ya = m.yes_ask;
   var sum = yb + nb;
   var mid = Math.round((yb + ya) / 2);
-  // Arbitrage
-  if (sum > 0 && sum <= 93) {
-    return {
-      signal: "ARB",
-      side: "yes",
-      edge: (100 - sum) / 100,
-      prob: 1.0,
-      price: yb,
-      label: "Arb +" + (100 - sum) + "c"
-    };
-  }
-  // Volume momentum
+  if (sum > 0 && sum <= 93) return {
+    signal: "ARB",
+    side: "yes",
+    edge: (100 - sum) / 100,
+    prob: 1.0,
+    price: yb,
+    label: "Arb +" + (100 - sum) + "c"
+  };
   var spread = ya - yb;
   if (m.volume >= 5000 && spread <= 6 && spread >= 0) {
     if (mid >= 60 && mid <= 85) {
@@ -213,7 +203,8 @@ function analyzeMarket(m, cfg) {
         price: yb,
         label: "Vol " + mid + "%"
       };
-    } else if (mid >= 15 && mid <= 40) {
+    }
+    if (mid >= 15 && mid <= 40) {
       var e2 = (50 - mid) / 100 * 0.15;
       if (e2 >= cfg.minEdge) return {
         signal: "VOL",
@@ -225,7 +216,6 @@ function analyzeMarket(m, cfg) {
       };
     }
   }
-  // Fade extremes
   if (mid >= 92) {
     var e3 = (mid - 89) / 100;
     if (e3 >= cfg.minEdge) return {
@@ -252,8 +242,8 @@ function analyzeMarket(m, cfg) {
 }
 function kellySize(prob, priceCents, fraction, maxCents, days) {
   if (!priceCents || priceCents <= 0 || priceCents >= 100 || !maxCents) return 0;
-  var cost = priceCents / 100;
-  var b = (1 - cost) / cost;
+  var cost = priceCents / 100,
+    b = (1 - cost) / cost;
   var p = Math.min(0.97, Math.max(0.03, prob || 0.5));
   var f = Math.max(0, (b * p - (1 - p)) / b);
   var urg = days < 0.5 ? 1.5 : days < 1 ? 1.25 : days < 2 ? 1.1 : 1.0;
@@ -262,35 +252,27 @@ function kellySize(prob, priceCents, fraction, maxCents, days) {
 }
 
 // === Simulation ===
-var SIM = {
-  edgeRealize: {
-    ARB: 1.0,
-    VOL: 0.55,
-    FADE: 0.25
-  },
-  fillRate: {
+function simulateTrade(sig) {
+  var fillRates = {
     ARB: 0.95,
     VOL: 0.78,
     FADE: 0.70
-  },
-  feeRate: 0.07
-};
-function simulateTrade(sig) {
-  if (Math.random() > (SIM.fillRate[sig.signal] || 0.7)) return {
+  };
+  var edgeRates = {
+    ARB: 1.0,
+    VOL: 0.55,
+    FADE: 0.25
+  };
+  if (Math.random() > (fillRates[sig.signal] || 0.7)) return {
     filled: false
   };
-  var realEdge = sig.edge * (SIM.edgeRealize[sig.signal] || 0.5);
-  var noise = (Math.random() - 0.5) * 0.06;
-  var trueProb = Math.min(0.97, Math.max(0.03, (sig.prob || 0.5) + realEdge + noise));
+  var realEdge = sig.edge * (edgeRates[sig.signal] || 0.5);
+  var trueProb = Math.min(0.97, Math.max(0.03, (sig.prob || 0.5) + realEdge + (Math.random() - 0.5) * 0.06));
   var won = Math.random() < trueProb;
-  var cost = sig.price / 100;
-  var payout = won ? 1 - cost : 0;
-  var fee = won ? payout * SIM.feeRate : 0;
   return {
     filled: true,
     won: won,
-    trueProb: trueProb,
-    fee: fee
+    trueProb: trueProb
   };
 }
 
@@ -307,8 +289,10 @@ function lsSet(k, v) {
     localStorage.setItem(k, v);
   } catch (e) {/* */}
 }
-function initMetrics() {
+function freshMetrics() {
   return {
+    v: 2,
+    startTime: Date.now(),
     evaluated: 0,
     signals: 0,
     attempted: 0,
@@ -317,11 +301,23 @@ function initMetrics() {
     losses: 0,
     placed: 0,
     earned: 0,
+    fees: 0,
+    leveraged: 0,
     byType: {}
   };
 }
+function loadMetrics() {
+  try {
+    var raw = lsGet("kt_metrics");
+    if (raw) {
+      var m = JSON.parse(raw);
+      if (m && m.v === 2) return m;
+    }
+  } catch (e) {/* */}
+  return freshMetrics();
+}
 
-// === Mock markets for demo ===
+// === Mock markets ===
 function mockMarkets() {
   var n = Date.now();
   var d = function (days) {
@@ -333,7 +329,6 @@ function mockMarkets() {
     yes_bid: 68,
     yes_ask: 72,
     no_bid: 26,
-    no_ask: 30,
     last_price: 70,
     close_time: d(2),
     volume: 95000
@@ -343,7 +338,6 @@ function mockMarkets() {
     yes_bid: 22,
     yes_ask: 26,
     no_bid: 72,
-    no_ask: 76,
     last_price: 24,
     close_time: d(3),
     volume: 210000
@@ -353,7 +347,6 @@ function mockMarkets() {
     yes_bid: 61,
     yes_ask: 65,
     no_bid: 33,
-    no_ask: 37,
     last_price: 63,
     close_time: d(4),
     volume: 67000
@@ -363,7 +356,6 @@ function mockMarkets() {
     yes_bid: 53,
     yes_ask: 57,
     no_bid: 41,
-    no_ask: 45,
     last_price: 55,
     close_time: d(1.5),
     volume: 120000
@@ -373,47 +365,15 @@ function mockMarkets() {
     yes_bid: 38,
     yes_ask: 43,
     no_bid: 55,
-    no_ask: 60,
     last_price: 40,
     close_time: d(5),
     volume: 42000
-  }, {
-    ticker: "ETH-4K",
-    title: "ETH above $4k this month?",
-    yes_bid: 29,
-    yes_ask: 34,
-    no_bid: 64,
-    no_ask: 69,
-    last_price: 31,
-    close_time: d(8),
-    volume: 88000
-  }, {
-    ticker: "TSLA-BEAT",
-    title: "TSLA beats earnings?",
-    yes_bid: 55,
-    yes_ask: 59,
-    no_bid: 39,
-    no_ask: 43,
-    last_price: 57,
-    close_time: d(6),
-    volume: 180000
-  }, {
-    ticker: "GOLD-2400",
-    title: "Gold above $2,400 Friday?",
-    yes_bid: 74,
-    yes_ask: 79,
-    no_bid: 19,
-    no_ask: 24,
-    last_price: 77,
-    close_time: d(1.8),
-    volume: 34000
   }, {
     ticker: "TRUMP-EXEC",
     title: "Executive order this week?",
     yes_bid: 93,
     yes_ask: 96,
     no_bid: 2,
-    no_ask: 5,
     last_price: 94,
     close_time: d(2.5),
     volume: 55000
@@ -423,18 +383,22 @@ function mockMarkets() {
     yes_bid: 35,
     yes_ask: 40,
     no_bid: 58,
-    no_ask: 63,
     last_price: 37,
     close_time: d(5.5),
     volume: 72000
+  }, {
+    ticker: "GOLD-2400",
+    title: "Gold above $2,400 Friday?",
+    yes_bid: 74,
+    yes_ask: 79,
+    no_bid: 19,
+    last_price: 77,
+    close_time: d(1.8),
+    volume: 34000
   }];
 }
-
-// === Worker code for CORS proxy ===
 var WORKER_CODE = 'const K="https://api.elections.kalshi.com/trade-api/v2";\nconst C={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,POST,PUT,DELETE,OPTIONS","Access-Control-Allow-Headers":"Content-Type,KALSHI-ACCESS-KEY,KALSHI-ACCESS-SIGNATURE,KALSHI-ACCESS-TIMESTAMP"};\nexport default{async fetch(r){if(r.method==="OPTIONS")return new Response(null,{headers:C});const u=new URL(r.url);const t=K+u.pathname+u.search;const h={};for(const[k,v]of r.headers){if(!k.startsWith("cf-")&&k!=="host")h[k]=v;}const o={method:r.method,headers:h};if(r.body)o.body=r.body;const s=await fetch(t,o);const b=await s.arrayBuffer();const rh=new Headers(s.headers);for(const[k,v]of Object.entries(C))rh.set(k,v);return new Response(b,{status:s.status,headers:rh});}};';
 
-// =====================================================================
-// MAIN COMPONENT
 // =====================================================================
 function KalshiTrader() {
   var [screen, setScreen] = useState("login");
@@ -446,18 +410,12 @@ function KalshiTrader() {
   var [demo, setDemo] = useState(false);
   var [paper, setPaper] = useState(false);
   var [balance, setBalance] = useState(0);
+  var [startBalance] = useState(10000);
   var [markets, setMarkets] = useState([]);
   var [logs, setLogs] = useState([]);
   var [autoOn, setAutoOn] = useState(lsGet("kt_auto") === "true");
   var [eStopped, setEStopped] = useState(lsGet("kt_estop") === "true");
-  var [metrics, setMetrics] = useState(function () {
-    try {
-      var v = lsGet("kt_metrics");
-      return v ? JSON.parse(v) : initMetrics();
-    } catch (e) {
-      return initMetrics();
-    }
-  });
+  var [metrics, setMetrics] = useState(loadMetrics);
   var [tab, setTab] = useState("markets");
   var [fetching, setFetching] = useState(false);
   var [filter, setFilter] = useState("all");
@@ -469,6 +427,7 @@ function KalshiTrader() {
   };
   var tradedRef = useRef({});
   var timerRef = useRef(null);
+  var FEE = 0.07;
   var addLog = useCallback(function (msg, type) {
     setLogs(function (p) {
       return [{
@@ -482,6 +441,14 @@ function KalshiTrader() {
     lsSet("kt_metrics", JSON.stringify(m));
   };
 
+  // -- Helpers --
+  var cents = function (v) {
+    return "$" + (v / 100).toFixed(2);
+  };
+  var pct = function (n, d) {
+    return d > 0 ? Math.round(n / d * 100) + "%" : "--";
+  };
+
   // -- Login --
   var handleLogin = async function () {
     setLoading(true);
@@ -489,7 +456,7 @@ function KalshiTrader() {
     try {
       await setCredentials(keyId, pemText);
     } catch (e) {
-      setErr("Bad private key. Paste full PEM including BEGIN/END lines.");
+      setErr("Bad private key.");
       setLoading(false);
       return;
     }
@@ -504,16 +471,10 @@ function KalshiTrader() {
     } catch (e) {
       var em = e.message || "";
       if (em === "CORS_BLOCKED" || em.indexOf("Load failed") >= 0 || em.indexOf("Failed to fetch") >= 0) {
-        if (!proxyUrl) {
-          setScreen("corserror");
-        } else {
-          setErr("Proxy reachable but Kalshi blocked. Redeploy Worker with latest code.");
-        }
+        if (!proxyUrl) setScreen("corserror");else setErr("Proxy reachable but Kalshi blocked.");
       } else if (em.indexOf("401") >= 0 || em.indexOf("403") >= 0) {
-        setErr("Credentials rejected. Check Key ID matches private key.");
-      } else {
-        setErr(em);
-      }
+        setErr("Credentials rejected.");
+      } else setErr(em);
     }
     setLoading(false);
   };
@@ -521,25 +482,23 @@ function KalshiTrader() {
     setPaper(true);
     setDemo(false);
     setScreen("dash");
-    addLog("Paper trading -- real markets, simulated orders");
+    addLog("Paper trading active");
   };
   var handleLive = function () {
     setPaper(false);
     setDemo(false);
     setScreen("dash");
-    addLog("LIVE trading active", "warn");
+    addLog("LIVE trading", "warn");
   };
   var handleDemo = function () {
     setDemo(true);
     setPaper(false);
     setBalance(10000);
     var mocks = mockMarkets();
-    for (var i = 0; i < mocks.length; i++) {
-      mocks[i].signal = analyzeMarket(mocks[i], cfg);
-    }
+    for (var i = 0; i < mocks.length; i++) mocks[i].signal = analyzeMarket(mocks[i], cfg);
     setMarkets(mocks);
     setScreen("dash");
-    addLog("Demo mode -- offline mock markets");
+    addLog("Demo mode");
   };
 
   // -- Fetch --
@@ -547,17 +506,15 @@ function KalshiTrader() {
     if (demo) return;
     setFetching(true);
     try {
-      addLog("Fetching markets from Kalshi...");
+      addLog("Fetching markets...");
       var all = await fetchMarkets();
-      addLog("API returned " + all.length + " raw markets");
-      // Filter by time window, attach signals
+      addLog("API returned " + all.length + " markets");
       var shown = [];
       for (var i = 0; i < all.length; i++) {
-        var m = all[i];
-        var days = daysUntil(m.close_time);
+        var days = daysUntil(all[i].close_time);
         if (days <= 0 || days > cfg.daysWindow) continue;
-        m.signal = analyzeMarket(m, cfg);
-        shown.push(m);
+        all[i].signal = analyzeMarket(all[i], cfg);
+        shown.push(all[i]);
       }
       shown.sort(function (a, b) {
         return new Date(a.close_time) - new Date(b.close_time);
@@ -566,7 +523,7 @@ function KalshiTrader() {
       var sigCount = shown.filter(function (m) {
         return m.signal;
       }).length;
-      addLog("Showing " + shown.length + " markets within " + cfg.daysWindow + "d, " + sigCount + " signals");
+      addLog(shown.length + " in window, " + sigCount + " signals");
       setMetrics(function (p) {
         var n = Object.assign({}, p);
         n.evaluated += all.length;
@@ -595,6 +552,7 @@ function KalshiTrader() {
     var size = kellySize(sig.prob, sig.price, cfg.kellyFrac, cfg.maxBetCents, days);
     if (size <= 0) return;
     var contracts = Math.max(1, Math.floor(size / sig.price));
+    var costC = contracts * sig.price;
     if (demo || paper) {
       var result = simulateTrade(sig);
       tradedRef.current[m.ticker] = true;
@@ -609,60 +567,59 @@ function KalshiTrader() {
           p: 0,
           e: 0
         };
-        var bt = n.byType[sig.signal];
-        bt.a++;
+        n.byType[sig.signal].a++;
         if (result.filled) {
           n.filled++;
-          bt.f++;
-          var costC = contracts * sig.price;
+          n.byType[sig.signal].f++;
           n.placed += costC;
-          bt.p += costC;
+          n.leveraged += costC;
+          n.byType[sig.signal].p += costC;
           if (result.won) {
-            var winC = Math.round(contracts * (100 - sig.price) * (1 - SIM.feeRate));
+            var winC = Math.round(contracts * (100 - sig.price) * (1 - FEE));
             n.wins++;
-            bt.w++;
+            n.byType[sig.signal].w++;
             n.earned += winC;
-            bt.e += winC;
+            n.byType[sig.signal].e += winC;
+            n.fees += Math.round(contracts * (100 - sig.price) * FEE);
             setBalance(function (b) {
               return b + winC;
             });
             addLog("[" + sig.signal + "] WIN " + m.ticker + " +" + (winC / 100).toFixed(2), "success");
           } else {
             n.losses++;
-            bt.l++;
+            n.byType[sig.signal].l++;
             n.earned -= costC;
-            bt.e -= costC;
+            n.byType[sig.signal].e -= costC;
             setBalance(function (b) {
               return b - costC;
             });
             addLog("[" + sig.signal + "] LOSS " + m.ticker + " -" + (costC / 100).toFixed(2), "error");
           }
         } else {
-          addLog("[" + sig.signal + "] " + m.ticker + " -- limit missed", "warn");
+          addLog("[" + sig.signal + "] " + m.ticker + " -- no fill", "warn");
         }
         saveM(n);
         return n;
       });
     } else {
-      // LIVE order
       kalshiReq("/orders", "POST", {
         ticker: m.ticker,
         action: "buy",
         side: sig.side,
-        count_fp: String(contracts) + ".00",
+        count_fp: contracts + ".00",
         type: "limit",
         yes_price_dollars: (sig.side === "yes" ? sig.price / 100 : (100 - sig.price) / 100).toFixed(2),
         time_in_force: "ioc"
       }).then(function () {
         tradedRef.current[m.ticker] = true;
-        addLog("[LIVE " + sig.signal + "] " + contracts + "x " + sig.side + " @ " + sig.price + "c " + m.ticker, "success");
+        addLog("[LIVE] " + contracts + "x " + sig.side + " @ " + sig.price + "c " + m.ticker, "success");
       }).catch(function (e) {
-        addLog("[LIVE] Order failed: " + e.message, "error");
+        addLog("[LIVE] Failed: " + e.message, "error");
       });
     }
   }, [demo, paper, eStopped, addLog]);
 
-  // -- Auto-trade --
+  // -- Auto --
   useEffect(function () {
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -691,41 +648,51 @@ function KalshiTrader() {
       setAutoOn(false);
       lsSet("kt_auto", "false");
       addLog("EMERGENCY STOP", "error");
-    } else addLog("E-stop released", "info");
+    } else addLog("E-stop released");
   };
+
+  // -- Projections --
+  var winRate = metrics.filled > 0 ? metrics.wins / metrics.filled : 0;
+  var avgWin = metrics.wins > 0 ? metrics.earned / metrics.wins : 0;
+  var avgLoss = metrics.losses > 0 ? metrics.placed / metrics.losses : 0; // avg cost per loss
+  var elapsed = (Date.now() - (metrics.startTime || Date.now())) / 3600000; // hours
+  var tradesPerHour = elapsed > 0.1 ? metrics.filled / elapsed : 0;
+  var projectedDaily = tradesPerHour * 24 * (winRate * avgWin - (1 - winRate) * avgLoss) / 100;
+  var projectedWeekly = projectedDaily * 7;
+  var pnl = metrics.earned / 100;
+  var roi = metrics.placed > 0 ? (metrics.earned / metrics.placed * 100).toFixed(1) : "0.0";
 
   // =====================================================================
   // RENDER
   // =====================================================================
   var mode = demo ? "DEMO" : paper ? "PAPER" : "LIVE";
   var modeCol = demo ? "#f0a030" : paper ? "#00ff88" : "#ff3b30";
-
-  // -- LOGIN --
-  if (screen === "login") return React.createElement("div", {
+  var R = React.createElement;
+  if (screen === "login") return R("div", {
     style: S.page
-  }, React.createElement("div", {
+  }, R("div", {
     style: S.card
-  }, React.createElement("div", {
+  }, R("div", {
     style: {
       fontSize: 22,
       fontWeight: 900,
       color: "#00ff88",
       marginBottom: 4
     }
-  }, "KAUTO"), React.createElement("div", {
+  }, "KAUTO"), R("div", {
     style: {
       fontSize: 12,
       color: "#666",
       marginBottom: 16
     }
-  }, "Kalshi Auto-Trader"), React.createElement("input", {
+  }, "Kalshi Auto-Trader"), R("input", {
     style: S.inp,
     placeholder: "API Key ID",
     value: keyId,
     onChange: function (e) {
       setKeyId(e.target.value);
     }
-  }), React.createElement("textarea", {
+  }), R("textarea", {
     style: Object.assign({}, S.inp, {
       height: 90,
       fontFamily: "monospace",
@@ -736,27 +703,23 @@ function KalshiTrader() {
     onChange: function (e) {
       setPemText(e.target.value);
     }
-  }), React.createElement("input", {
+  }), R("input", {
     style: S.inp,
-    placeholder: "CORS Proxy URL (https://xxx.workers.dev)",
+    placeholder: "CORS Proxy URL",
     value: proxyUrl,
     onChange: function (e) {
       setProxyUrl(e.target.value);
     }
-  }), err && React.createElement("div", {
+  }), err && R("div", {
     style: {
       color: "#ff6b6b",
       fontSize: 12
     }
-  }, err), React.createElement("button", {
-    style: Object.assign({}, S.btn, {
-      background: "#00ff8822",
-      color: "#00ff88",
-      border: "1px solid #00ff8844"
-    }),
+  }, err), R("button", {
+    style: Object.assign({}, S.btn, S.btnG),
     onClick: handleLogin,
     disabled: loading || !keyId || !pemText
-  }, loading ? "Connecting..." : "Connect"), React.createElement("button", {
+  }, loading ? "Connecting..." : "Connect"), R("button", {
     style: Object.assign({}, S.btn, {
       background: "#1a1a2e",
       color: "#888",
@@ -764,27 +727,24 @@ function KalshiTrader() {
     }),
     onClick: handleDemo
   }, "Demo (Offline)")));
-
-  // -- CORS ERROR --
-  if (screen === "corserror") return React.createElement("div", {
+  if (screen === "corserror") return R("div", {
     style: S.page
-  }, React.createElement("div", {
+  }, R("div", {
     style: S.card
-  }, React.createElement("div", {
+  }, R("div", {
     style: {
       fontSize: 16,
       fontWeight: 800,
       color: "#ff6b6b",
       marginBottom: 12
     }
-  }, "CORS Proxy Needed"), React.createElement("div", {
+  }, "CORS Proxy Needed"), R("div", {
     style: {
       fontSize: 12,
       color: "#999",
-      lineHeight: 1.6,
-      marginBottom: 12
+      lineHeight: 1.6
     }
-  }, "Kalshi blocks browser requests. Deploy a Cloudflare Worker (free, 2 min):", React.createElement("br", null), "1. Go to workers.cloudflare.com", React.createElement("br", null), "2. Create worker, paste this code:", React.createElement("pre", {
+  }, "Deploy a Cloudflare Worker (free):", R("br"), "1. workers.cloudflare.com - create worker", R("br"), "2. Paste this code:", R("pre", {
     style: {
       background: "#0a0f14",
       padding: 8,
@@ -795,37 +755,32 @@ function KalshiTrader() {
       whiteSpace: "pre-wrap",
       wordBreak: "break-all"
     }
-  }, WORKER_CODE), React.createElement("br", null), "3. Deploy, paste URL below"), React.createElement("input", {
+  }, WORKER_CODE), R("br"), "3. Deploy, paste URL below"), R("input", {
     style: S.inp,
     placeholder: "https://your-worker.workers.dev",
     value: proxyUrl,
     onChange: function (e) {
       setProxyUrl(e.target.value);
     }
-  }), React.createElement("button", {
-    style: Object.assign({}, S.btn, {
-      background: "#00ff8822",
-      color: "#00ff88"
-    }),
+  }), R("button", {
+    style: Object.assign({}, S.btn, S.btnG),
     onClick: function () {
       if (proxyUrl) setProxy(proxyUrl);
       setScreen("login");
     }
   }, "Back to Login")));
-
-  // -- MODE SELECT --
-  if (screen === "modeselect") return React.createElement("div", {
+  if (screen === "modeselect") return R("div", {
     style: S.page
-  }, React.createElement("div", {
+  }, R("div", {
     style: S.card
-  }, React.createElement("div", {
+  }, R("div", {
     style: {
       fontSize: 18,
       fontWeight: 900,
       color: "#00ff88",
       marginBottom: 16
     }
-  }, "Connected"), React.createElement("button", {
+  }, "Connected"), R("button", {
     style: Object.assign({}, S.btn, {
       background: "#0a1a0f",
       border: "2px solid #00ff8844",
@@ -833,18 +788,18 @@ function KalshiTrader() {
       padding: 16
     }),
     onClick: handlePaper
-  }, React.createElement("div", {
+  }, R("div", {
     style: {
       fontWeight: 800,
       color: "#00ff88"
     }
-  }, "Paper Trade"), React.createElement("div", {
+  }, "Paper Trade"), R("div", {
     style: {
       fontSize: 11,
       color: "#888",
       marginTop: 4
     }
-  }, "Real markets, simulated orders")), React.createElement("button", {
+  }, "Real markets, simulated orders")), R("button", {
     style: Object.assign({}, S.btn, {
       background: "#1a0a0a",
       border: "2px solid #ff3b3044",
@@ -853,12 +808,12 @@ function KalshiTrader() {
       marginTop: 10
     }),
     onClick: handleLive
-  }, React.createElement("div", {
+  }, R("div", {
     style: {
       fontWeight: 800,
       color: "#ff3b30"
     }
-  }, "Go Live"), React.createElement("div", {
+  }, "Go Live"), R("div", {
     style: {
       fontSize: 11,
       color: "#888",
@@ -870,31 +825,32 @@ function KalshiTrader() {
   var shownMarkets = filter === "signals" ? markets.filter(function (m) {
     return m.signal;
   }) : markets;
-  return React.createElement("div", {
+  var pnlColor = pnl >= 0 ? "#00ff88" : "#ff6b6b";
+  return R("div", {
     style: S.shell
   },
   // Header
-  React.createElement("div", {
+  R("div", {
     style: S.hdr
-  }, React.createElement("div", {
+  }, R("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 8
     }
-  }, React.createElement("span", {
+  }, R("span", {
     style: {
       fontWeight: 900,
       fontSize: 16,
       color: "#00ff88"
     }
-  }, "K"), React.createElement("span", {
+  }, "K"), R("span", {
     style: {
       fontWeight: 800,
       fontSize: 13,
       color: "#ddd"
     }
-  }, "AUTO"), React.createElement("span", {
+  }, "AUTO"), R("span", {
     style: {
       background: modeCol + "22",
       color: modeCol,
@@ -904,19 +860,19 @@ function KalshiTrader() {
       fontSize: 10,
       fontWeight: 800
     }
-  }, mode)), React.createElement("div", {
+  }, mode)), R("div", {
     style: {
       display: "flex",
       alignItems: "center",
       gap: 10
     }
-  }, React.createElement("span", {
+  }, R("span", {
     style: {
       fontSize: 13,
       color: "#ccc",
       fontFamily: "monospace"
     }
-  }, "$" + (balance / 100).toFixed(2)), React.createElement("button", {
+  }, cents(balance)), R("button", {
     style: {
       background: eStopped ? "#444" : "#ff3b30",
       color: "#fff",
@@ -929,15 +885,53 @@ function KalshiTrader() {
     },
     onClick: toggleEStop
   }, eStopped ? "RESUME" : "STOP"))),
+  // Financial Dashboard
+  R("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr 1fr 1fr",
+      gap: 1,
+      background: "#1a2230",
+      borderBottom: "1px solid #1a2230"
+    }
+  }, R("div", {
+    style: S.stat
+  }, R("div", {
+    style: S.statLabel
+  }, "Leveraged"), R("div", {
+    style: S.statVal
+  }, cents(metrics.leveraged || 0))), R("div", {
+    style: S.stat
+  }, R("div", {
+    style: S.statLabel
+  }, "P&L"), R("div", {
+    style: Object.assign({}, S.statVal, {
+      color: pnlColor
+    })
+  }, (pnl >= 0 ? "+" : "") + pnl.toFixed(2))), R("div", {
+    style: S.stat
+  }, R("div", {
+    style: S.statLabel
+  }, "ROI"), R("div", {
+    style: Object.assign({}, S.statVal, {
+      color: pnlColor
+    })
+  }, roi + "%")), R("div", {
+    style: S.stat
+  }, R("div", {
+    style: S.statLabel
+  }, "Win Rate"), R("div", {
+    style: S.statVal
+  }, pct(metrics.wins, metrics.filled)))),
   // Tabs
-  React.createElement("div", {
+  R("div", {
     style: {
       display: "flex",
       borderBottom: "1px solid #1a2230",
       background: "#0a0e14"
     }
   }, ["markets", "log", "metrics"].map(function (t) {
-    return React.createElement("button", {
+    return R("button", {
       key: t,
       style: {
         flex: 1,
@@ -956,7 +950,7 @@ function KalshiTrader() {
     }, t.charAt(0).toUpperCase() + t.slice(1) + (t === "markets" ? " (" + shownMarkets.length + ")" : ""));
   })),
   // Body
-  React.createElement("div", {
+  R("div", {
     style: {
       flex: 1,
       padding: 12,
@@ -964,23 +958,20 @@ function KalshiTrader() {
     }
   },
   // == MARKETS ==
-  tab === "markets" && React.createElement("div", null, React.createElement("div", {
+  tab === "markets" && R("div", null, R("div", {
     style: {
       display: "flex",
       gap: 8,
       marginBottom: 10
     }
-  }, React.createElement("button", {
+  }, R("button", {
     style: Object.assign({}, S.btn, {
       flex: 1,
-      fontSize: 12,
-      background: "#00ff8818",
-      color: "#00ff88",
-      border: "1px solid #00ff8833"
-    }),
+      fontSize: 12
+    }, S.btnG),
     onClick: doFetch,
     disabled: fetching || demo
-  }, fetching ? "Loading..." : "Refresh"), React.createElement("button", {
+  }, fetching ? "Loading..." : "Refresh"), R("button", {
     style: Object.assign({}, S.btn, {
       flex: 1,
       fontSize: 12,
@@ -993,7 +984,7 @@ function KalshiTrader() {
       setAutoOn(n);
       lsSet("kt_auto", String(n));
     }
-  }, "Auto: " + (autoOn ? "ON" : "OFF")), React.createElement("button", {
+  }, "Auto: " + (autoOn ? "ON" : "OFF")), R("button", {
     style: Object.assign({}, S.btn, {
       width: 70,
       fontSize: 11,
@@ -1003,7 +994,7 @@ function KalshiTrader() {
     onClick: function () {
       setFilter(filter === "all" ? "signals" : "all");
     }
-  }, filter === "all" ? "All" : "Signals")), shownMarkets.length === 0 && React.createElement("div", {
+  }, filter === "all" ? "All" : "Sigs")), shownMarkets.length === 0 && R("div", {
     style: {
       color: "#555",
       textAlign: "center",
@@ -1014,7 +1005,7 @@ function KalshiTrader() {
     var days = daysUntil(m.close_time);
     var dLabel = days < 1 ? Math.round(days * 24) + "h" : days.toFixed(1) + "d";
     var sigCol = sig ? sig.signal === "ARB" ? "#00ff88" : sig.signal === "VOL" ? "#4488ff" : "#ff8844" : "#1a2230";
-    return React.createElement("div", {
+    return R("div", {
       key: m.ticker,
       style: {
         background: "#0a0f14",
@@ -1024,13 +1015,13 @@ function KalshiTrader() {
         padding: 12,
         marginBottom: 8
       }
-    }, React.createElement("div", {
+    }, R("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
         marginBottom: 4
       }
-    }, React.createElement("div", {
+    }, R("div", {
       style: {
         fontSize: 13,
         fontWeight: 600,
@@ -1038,32 +1029,29 @@ function KalshiTrader() {
         flex: 1,
         lineHeight: 1.3
       }
-    }, m.title), React.createElement("span", {
+    }, m.title), R("span", {
       style: {
         fontSize: 11,
         color: "#555",
         whiteSpace: "nowrap",
         marginLeft: 8
       }
-    }, dLabel)), React.createElement("div", {
+    }, dLabel)), R("div", {
       style: {
         display: "flex",
         gap: 10,
         fontSize: 11,
-        color: "#777"
+        color: "#777",
+        flexWrap: "wrap"
       }
-    }, React.createElement("span", null, "Y:" + m.yes_bid), React.createElement("span", null, "N:" + m.no_bid), React.createElement("span", null, "Last:" + m.last_price), m.volume > 0 && React.createElement("span", null, "Vol:" + (m.volume >= 1000 ? (m.volume / 1000).toFixed(0) + "k" : m.volume)), React.createElement("span", {
-      style: {
-        color: "#444"
-      }
-    }, m.ticker)), sig && React.createElement("div", {
+    }, R("span", null, "Y:" + m.yes_bid), R("span", null, "N:" + m.no_bid), R("span", null, "Last:" + m.last_price), m.volume > 0 && R("span", null, "Vol:" + (m.volume >= 1000 ? (m.volume / 1000).toFixed(0) + "k" : Math.round(m.volume)))), sig && R("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
         alignItems: "center",
         marginTop: 6
       }
-    }, React.createElement("div", null, React.createElement("span", {
+    }, R("div", null, R("span", {
       style: {
         background: sigCol + "22",
         color: sigCol,
@@ -1074,12 +1062,12 @@ function KalshiTrader() {
         fontWeight: 800,
         marginRight: 6
       }
-    }, sig.signal), React.createElement("span", {
+    }, sig.signal), R("span", {
       style: {
         fontSize: 11,
         color: "#bbb"
       }
-    }, sig.label)), React.createElement("button", {
+    }, sig.label)), R("button", {
       style: {
         background: "#00ff8818",
         color: "#00ff88",
@@ -1096,7 +1084,7 @@ function KalshiTrader() {
     }, "Trade")));
   })),
   // == LOG ==
-  tab === "log" && React.createElement("div", null, logs.length === 0 && React.createElement("div", {
+  tab === "log" && R("div", null, logs.length === 0 && R("div", {
     style: {
       color: "#555",
       textAlign: "center",
@@ -1104,7 +1092,7 @@ function KalshiTrader() {
     }
   }, "No logs yet"), logs.map(function (l, i) {
     var c = l.type === "error" ? "#ff6b6b" : l.type === "success" ? "#00ff88" : l.type === "warn" ? "#f0a030" : "#888";
-    return React.createElement("div", {
+    return R("div", {
       key: i,
       style: {
         fontSize: 11,
@@ -1113,7 +1101,7 @@ function KalshiTrader() {
         borderBottom: "1px solid #111",
         fontFamily: "monospace"
       }
-    }, React.createElement("span", {
+    }, R("span", {
       style: {
         color: "#444",
         marginRight: 6
@@ -1121,46 +1109,68 @@ function KalshiTrader() {
     }, new Date(l.t).toLocaleTimeString()), l.msg);
   })),
   // == METRICS ==
-  tab === "metrics" && React.createElement("div", null, React.createElement("div", {
+  tab === "metrics" && R("div", null,
+  // Financial Overview
+  R("div", {
     style: S.mCard
-  }, React.createElement("div", {
-    style: {
-      fontWeight: 800,
-      color: "#00ff88",
-      marginBottom: 8
-    }
-  }, "Overview"), mRow("Evaluated", metrics.evaluated), mRow("Signals", metrics.signals), mRow("Attempted", metrics.attempted), mRow("Filled", metrics.filled), mRow("Fill Rate", metrics.attempted > 0 ? Math.round(metrics.filled / metrics.attempted * 100) + "%" : "--"), mRow("W / L", metrics.wins + " / " + metrics.losses), mRow("Win Rate", metrics.filled > 0 ? Math.round(metrics.wins / metrics.filled * 100) + "%" : "--"), mRow("Placed", "$" + (metrics.placed / 100).toFixed(2)), mRow("P&L", "$" + (metrics.earned / 100).toFixed(2))), Object.keys(metrics.byType).map(function (sig) {
+  }, R("div", {
+    style: S.mTitle
+  }, "Financial Overview"), mRow("Balance", cents(balance)), mRow("Starting Balance", cents(startBalance)), mRow("Total Leveraged", cents(metrics.leveraged || 0)), mRow("Total P&L", (pnl >= 0 ? "+" : "") + "$" + pnl.toFixed(2)), mRow("Fees Paid", cents(metrics.fees || 0)), mRow("ROI", roi + "%")),
+  // Projections
+  R("div", {
+    style: S.mCard
+  }, R("div", {
+    style: S.mTitle
+  }, "Projections"), mRow("Trades/Hour", tradesPerHour.toFixed(1)), mRow("Avg Win", cents(Math.abs(avgWin))), mRow("Avg Loss", cents(Math.abs(avgLoss))), mRow("Proj. Daily", (projectedDaily >= 0 ? "+$" : "-$") + Math.abs(projectedDaily).toFixed(2)), mRow("Proj. Weekly", (projectedWeekly >= 0 ? "+$" : "-$") + Math.abs(projectedWeekly).toFixed(2)), mRow("Proj. Monthly", (projectedWeekly * 4.3 >= 0 ? "+$" : "-$") + Math.abs(projectedWeekly * 4.3).toFixed(2))),
+  // Performance
+  R("div", {
+    style: S.mCard
+  }, R("div", {
+    style: S.mTitle
+  }, "Performance"), mRow("Markets Evaluated", String(metrics.evaluated)), mRow("Signals Found", String(metrics.signals)), mRow("Trades Attempted", String(metrics.attempted)), mRow("Trades Filled", String(metrics.filled)), mRow("Fill Rate", pct(metrics.filled, metrics.attempted)), mRow("Wins", String(metrics.wins)), mRow("Losses", String(metrics.losses)), mRow("Win Rate", pct(metrics.wins, metrics.filled))),
+  // Per-strategy breakdown
+  Object.keys(metrics.byType || {}).length > 0 && R("div", {
+    style: S.mCard
+  }, R("div", {
+    style: S.mTitle
+  }, "By Strategy"), Object.keys(metrics.byType).map(function (sig) {
     var bt = metrics.byType[sig];
-    return React.createElement("div", {
+    if (!bt || !bt.a) return null;
+    return R("div", {
       key: sig,
-      style: S.mCard
-    }, React.createElement("div", {
       style: {
-        fontWeight: 800,
-        color: "#00ff88",
-        marginBottom: 6
+        marginBottom: 8,
+        paddingBottom: 8,
+        borderBottom: "1px solid #1a2230"
       }
-    }, sig), mRow("Attempts", bt.a), mRow("Filled", bt.f), mRow("W/L", bt.w + "/" + bt.l), mRow("P&L", "$" + ((bt.e || 0) / 100).toFixed(2)));
-  }), React.createElement("button", {
+    }, R("div", {
+      style: {
+        fontWeight: 700,
+        color: "#aaa",
+        fontSize: 12,
+        marginBottom: 4
+      }
+    }, sig), mRow("Filled", bt.f + "/" + bt.a), mRow("W/L", bt.w + "/" + bt.l), mRow("P&L", "$" + ((bt.e || 0) / 100).toFixed(2)));
+  })), R("button", {
     style: Object.assign({}, S.btn, {
       marginTop: 16,
       background: "#1a1a2e",
-      color: "#888",
+      color: "#666",
       fontSize: 11
     }),
     onClick: function () {
-      var m = initMetrics();
+      var m = freshMetrics();
       setMetrics(m);
       saveM(m);
     }
-  }, "Reset Metrics"))));
+  }, "Reset All Metrics"))));
 }
 function mRow(label, val) {
   return React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
-      padding: "3px 0",
+      padding: "4px 0",
       fontSize: 12
     }
   }, React.createElement("span", {
@@ -1172,7 +1182,7 @@ function mRow(label, val) {
       color: "#ccc",
       fontFamily: "monospace"
     }
-  }, val));
+  }, String(val)));
 }
 var S = {
   page: {
@@ -1183,7 +1193,7 @@ var S = {
     padding: 16,
     background: "#06080b",
     color: "#e0e0e0",
-    fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif"
+    fontFamily: "-apple-system,BlinkMacSystemFont,sans-serif"
   },
   card: {
     background: "#0d1117",
@@ -1200,7 +1210,7 @@ var S = {
     minHeight: "100vh",
     background: "#06080b",
     color: "#e0e0e0",
-    fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+    fontFamily: "-apple-system,BlinkMacSystemFont,sans-serif",
     display: "flex",
     flexDirection: "column"
   },
@@ -1211,6 +1221,24 @@ var S = {
     padding: "10px 14px",
     borderBottom: "1px solid #1a2230",
     background: "#0a0e14"
+  },
+  stat: {
+    background: "#0a0e14",
+    padding: "8px 6px",
+    textAlign: "center"
+  },
+  statLabel: {
+    fontSize: 9,
+    color: "#666",
+    letterSpacing: 0.5,
+    textTransform: "uppercase"
+  },
+  statVal: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#ccc",
+    fontFamily: "monospace",
+    marginTop: 2
   },
   inp: {
     background: "#0a0f14",
@@ -1236,12 +1264,23 @@ var S = {
     width: "100%",
     textAlign: "center"
   },
+  btnG: {
+    background: "#00ff8822",
+    color: "#00ff88",
+    border: "1px solid #00ff8844"
+  },
   mCard: {
     background: "#0a0f14",
     border: "1px solid #1a2230",
     borderRadius: 10,
     padding: 14,
     marginBottom: 10
+  },
+  mTitle: {
+    fontWeight: 800,
+    color: "#00ff88",
+    marginBottom: 8,
+    fontSize: 13
   }
 };
 try {
@@ -1249,7 +1288,8 @@ try {
     React.createElement(KalshiTrader, null)
   );
 } catch(e) {
-  document.getElementById('root').innerHTML = '<pre style="color:red;padding:20px">' + e.message + '</pre>';
+  document.getElementById('root').innerHTML = '<pre style="color:red;padding:20px;font-size:12px">' + e.message + '
+' + (e.stack||'').slice(0,500) + '</pre>';
 }
 
 </script>
