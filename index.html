@@ -2,33 +2,37 @@
 
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
   <title>Kalshi Auto Trader</title>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body, #root { height: 100%; }
-    body { background: #06080b; }
-    input[type=range] { accent-color: #00ff88; }
-    ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #222; border-radius: 2px; }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    html,body,#root{height:100%;background:#06080b;color:#fff;font-family:monospace}
+    input[type=range]{accent-color:#00ff88}
+    ::-webkit-scrollbar{width:4px}
+    ::-webkit-scrollbar-thumb{background:#222;border-radius:2px}
   </style>
 </head>
 <body>
-  <div id="root"></div>
-  <script>
-    // Error boundary — shows message instead of blank page if React crashes
-    window.onerror = function(msg, src, line, col, err) {
-      document.getElementById('root').innerHTML =
-        '<div style="color:#ff6b6b;padding:24px;font-family:monospace;font-size:13px;background:#06080b;min-height:100vh">' +
-        '<div style="font-size:18px;margin-bottom:12px">⚠ App Error</div>' +
-        '<div style="color:#888;margin-bottom:8px">' + (msg||'Unknown error') + '</div>' +
-        '<div style="color:#444;font-size:11px">' + (src||'') + ' line ' + (line||'?') + '</div>' +
-        '</div>';
-    };
+<div id="root"><div style="padding:20px;color:#555">Loading...</div></div>
+<script>
+// Catch any errors and show them
+window.addEventListener('error', function(e) {
+  document.getElementById('root').innerHTML =
+    '<div style="padding:24px;color:#ff6b6b;white-space:pre-wrap;font-size:12px">' +
+    '<b style="font-size:16px;display:block;margin-bottom:12px">JS Error</b>' +
+    (e.message||'unknown') + '\nLine: ' + e.lineno + '\n' + (e.filename||'') + '</div>';
+});
+window.addEventListener('unhandledrejection', function(e) {
+  document.getElementById('root').innerHTML =
+    '<div style="padding:24px;color:#ff6b6b;white-space:pre-wrap;font-size:12px">' +
+    '<b style="font-size:16px;display:block;margin-bottom:12px">Promise Error</b>' +
+    String(e.reason) + '</div>';
+});
+</script>
+<script>
 // ─── Cloudflare Worker code ───────────────────────────────────────────────────
 const WORKER_CODE = `const KALSHI = "https://api.elections.kalshi.com/trade-api/v2";
 const CORS = {
@@ -64,10 +68,7 @@ o.set(l, 1);
 o.set(c, 1 + l.length);
 return o;
 }
-function concat() {
-for (var _len = arguments.length, a = new Array(_len), _key2 = 0; _key2 < _len; _key2++) {
-a[_key2] = arguments[_key2];
-}
+function concat(…a) {
 const o = new Uint8Array(a.reduce((s, x) => s + x.length, 0));
 let i = 0;
 for (const x of a) {
@@ -118,9 +119,7 @@ async function setCredentials(keyId, pem) {
 _keyId = keyId.trim();
 _key = await importPrivateKey(pem);
 }
-async function kalshiReq(path) {
-let method = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : “GET”;
-let body = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : null;
+async function kalshiReq(path, method = “GET”, body = null) {
 const base = _proxy || KALSHI_BASE;
 const authH = await rsaSign(_key, _keyId, method, “/trade-api/v2” + path);
 const h = {
@@ -156,12 +155,11 @@ function d2c(d) {
 return d != null ? Math.round(parseFloat(d) * 100) : null;
 }
 function normalizeMarket(m) {
-var _ref, _ref2, _m$yes_bid, _ref3, _m$yes_ask, _ref4, _m$no_bid, _ref5, _m$last_price, _ref6, _m$volume;
-const yb = (_ref = (_ref2 = (_m$yes_bid = m.yes_bid) !== null && _m$yes_bid !== void 0 ? _m$yes_bid : d2c(m.yes_bid_dollars)) !== null && _ref2 !== void 0 ? _ref2 : m.last_price) !== null && _ref !== void 0 ? _ref : 50;
-const ya = (_ref3 = (_m$yes_ask = m.yes_ask) !== null && _m$yes_ask !== void 0 ? _m$yes_ask : d2c(m.yes_ask_dollars)) !== null && _ref3 !== void 0 ? _ref3 : yb + 4;
-const nb = (_ref4 = (_m$no_bid = m.no_bid) !== null && _m$no_bid !== void 0 ? _m$no_bid : d2c(m.no_bid_dollars)) !== null && _ref4 !== void 0 ? _ref4 : 100 - ya;
-const lp = (_ref5 = (_m$last_price = m.last_price) !== null && _m$last_price !== void 0 ? _m$last_price : d2c(m.last_price_dollars)) !== null && _ref5 !== void 0 ? _ref5 : 50;
-const vol = (_ref6 = (_m$volume = m.volume) !== null && _m$volume !== void 0 ? _m$volume : m.volume_24h) !== null && _ref6 !== void 0 ? _ref6 : 0;
+const yb = m.yes_bid ?? d2c(m.yes_bid_dollars) ?? m.last_price ?? 50;
+const ya = m.yes_ask ?? d2c(m.yes_ask_dollars) ?? yb + 4;
+const nb = m.no_bid ?? d2c(m.no_bid_dollars) ?? 100 - ya;
+const lp = m.last_price ?? d2c(m.last_price_dollars) ?? 50;
+const vol = m.volume ?? m.volume_24h ?? 0;
 return {
 …m,
 yes_bid: yb,
@@ -171,8 +169,7 @@ last_price: lp,
 volume: vol
 };
 }
-const getMarkets = function () {
-let cursor = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : “”;
+const getMarkets = (cursor = “”) => {
 const p = new URLSearchParams({
 limit: 200,
 status: “open”
@@ -277,14 +274,12 @@ const f = Math.max(0, (b * p - (1 - p)) / b);
 const r = Math.min(Math.round(f * fraction * maxCents * urgencyMult(days)), maxCents);
 return isNaN(r) ? 0 : r;
 }
-function analyzeMarket(market, config) {
-var _market$yes_bid, _market$yes_ask, _market$no_bid, _market$volume;
-let extraData = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : null;
+function analyzeMarket(market, config, extraData = null) {
 if (isSportsMarket(market)) return null;
-const yesBid = (_market$yes_bid = market.yes_bid) !== null && _market$yes_bid !== void 0 ? _market$yes_bid : 50;
-const yesAsk = (_market$yes_ask = market.yes_ask) !== null && _market$yes_ask !== void 0 ? _market$yes_ask : yesBid + 4;
-const noBid = (_market$no_bid = market.no_bid) !== null && _market$no_bid !== void 0 ? _market$no_bid : 100 - yesAsk;
-const vol = (_market$volume = market.volume) !== null && _market$volume !== void 0 ? _market$volume : 0;
+const yesBid = market.yes_bid ?? 50;
+const yesAsk = market.yes_ask ?? yesBid + 4;
+const noBid = market.no_bid ?? 100 - yesAsk;
+const vol = market.volume ?? 0;
 const sum = yesBid + noBid;
 const days = daysUntil(market.close_time);
 
@@ -383,7 +378,7 @@ why: `Market at ${mid.toFixed(0)}% is historically underpriced`
 }
 
 // ── 4. WEATHER SIGNAL ────────────────────────────────────────────────────
-if ((extraData === null || extraData === void 0 ? void 0 : extraData.type) === “weather” && extraData.confidence >= config.newsMinConf && Math.abs(extraData.adjustment) >= 5) {
+if (extraData?.type === “weather” && extraData.confidence >= config.newsMinConf && Math.abs(extraData.adjustment) >= 5) {
 const adj = extraData.adjustment;
 const adjMid = Math.max(3, Math.min(97, mid + adj));
 const side = adj > 0 ? “yes” : “no”;
@@ -421,17 +416,16 @@ WTHR: 0.70
 };
 const KALSHI_FEE = 0.07;
 function simulateTrade(signal, priceCents, costCents) {
-var _FILL_RATE$type, _EDGE_REAL$type;
 if (!priceCents || priceCents <= 0 || !costCents || costCents <= 0) return {
 filled: false
 };
 const type = signal.signal;
-if (Math.random() > ((_FILL_RATE$type = FILL_RATE[type]) !== null && _FILL_RATE$type !== void 0 ? _FILL_RATE$type : 0.70)) return {
+if (Math.random() > (FILL_RATE[type] ?? 0.70)) return {
 filled: false
 };
 const implied = priceCents / 100;
 const claimed = signal.estWinProb - implied;
-const realized = claimed * ((_EDGE_REAL$type = EDGE_REAL[type]) !== null && _EDGE_REAL$type !== void 0 ? _EDGE_REAL$type : 0.30);
+const realized = claimed * (EDGE_REAL[type] ?? 0.30);
 const noise = (Math.random() - 0.5) * 0.06;
 const trueP = Math.max(0.02, Math.min(0.98, implied + realized + noise));
 const won = Math.random() < trueP;
@@ -467,9 +461,7 @@ return consecLosses;
 recordWin() {
 consecLosses = 0;
 },
-shouldTrip() {
-let maxErrors = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : 5;
-let maxLosses = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : 6;
+shouldTrip(maxErrors = 5, maxLosses = 6) {
 return errors >= maxErrors || consecLosses >= maxLosses;
 },
 reset() {
@@ -827,8 +819,7 @@ setAutoOn(false);
 addLog(“🛑 EMERGENCY STOP ACTIVATED — all trading halted”, “error”);
 }
 };
-const addLog = useCallback(function (msg) {
-let type = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : “info”;
+const addLog = useCallback((msg, type = “info”) => {
 setLog(l => [{
 ts: new Date().toLocaleTimeString(),
 msg,
@@ -992,7 +983,7 @@ data: null
 const runScan = useCallback(async () => {
 if (!autoOn || emergencyStop || stopLossHit) return;
 if (checkBreaker()) return;
-const bal = balance !== null && balance !== void 0 ? balance : config.startBalanceCents;
+const bal = balance ?? config.startBalanceCents;
 if (checkStopLoss(bal)) return;
 const exposure = Math.min(5000 + Math.floor(Math.max(0, bal - config.startBalanceCents) / 10000) * 5000, bal * 0.5);
 addLog(`Scanning ${markets.length} markets… exposure cap $${(exposure / 100).toFixed(0)}`, “info”);
@@ -1003,12 +994,11 @@ return d > 0 && d < config.daysWindow;
 let evaluated = 0,
 placed = 0;
 for (const m of eligible) {
-var _weatherCache$m$ticke, _metrics$bySignal$sig;
 if (placed >= config.maxTradesPerScan) break;
 evaluated++;
 if (tradedRef.current.has(m.ticker)) continue;
 const isWeather = (m.category || “”).toLowerCase() === “weather” || m.title.toLowerCase().includes(“weather”) || m.title.toLowerCase().includes(“snow”) || m.title.toLowerCase().includes(“rain”) || m.title.toLowerCase().includes(“temperature”) || m.title.toLowerCase().includes(“hurricane”);
-const extraData = isWeather ? (_weatherCache$m$ticke = weatherCache[m.ticker]) === null || _weatherCache$m$ticke === void 0 ? void 0 : _weatherCache$m$ticke.data : null;
+const extraData = isWeather ? weatherCache[m.ticker]?.data : null;
 const signal = analyzeMarket(m, config, extraData);
 if (!signal) continue;
 updMetrics({
@@ -1028,12 +1018,11 @@ updMetrics({
 attempted: metrics.attempted + 1,
 bySignal: {
 [signal.signal]: {
-attempted: (((_metrics$bySignal$sig = metrics.bySignal[signal.signal]) === null || _metrics$bySignal$sig === void 0 ? void 0 : _metrics$bySignal$sig.attempted) || 0) + 1
+attempted: (metrics.bySignal[signal.signal]?.attempted || 0) + 1
 }
 }
 });
 if (demo || paper) {
-var _metrics$bySignal$sig2, _metrics$bySignal$sig3, _metrics$bySignal$sig4, _metrics$bySignal$sig5, _metrics$bySignal$sig6;
 const sim = simulateTrade(signal, price, cost);
 if (!sim.filled) {
 addLog(`⟳ Limit order not filled — ${m.ticker}`, “info”);
@@ -1044,7 +1033,7 @@ breaker[sim.won ? “recordWin” : “recordLoss”]();
 setBreakerStatus(breaker.status());
 const fee = sim.fee > 0 ? ` (fee -$${(sim.fee / 100).toFixed(2)})` : “”;
 addLog(`${sim.won ? "✓ WIN" : "✗ LOSS"}: ${sim.net >= 0 ? "+" : ""}$${(sim.net / 100).toFixed(2)}${fee} | p=${(sim.trueWinProb * 100).toFixed(0)}%`, sim.won ? “success” : “error”);
-setBalance(b => (b !== null && b !== void 0 ? b : 10000) + sim.net);
+setBalance(b => (b ?? 10000) + sim.net);
 setPnl(p => ({
 …p,
 realized: p.realized + sim.net
@@ -1058,11 +1047,11 @@ dollarPlaced: metrics.dollarPlaced + cost,
 dollarEarned: metrics.dollarEarned + sim.net,
 bySignal: {
 [sig]: {
-filled: (((_metrics$bySignal$sig2 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig2 === void 0 ? void 0 : _metrics$bySignal$sig2.filled) || 0) + 1,
-wins: (((_metrics$bySignal$sig3 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig3 === void 0 ? void 0 : _metrics$bySignal$sig3.wins) || 0) + (sim.won ? 1 : 0),
-losses: (((_metrics$bySignal$sig4 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig4 === void 0 ? void 0 : _metrics$bySignal$sig4.losses) || 0) + (sim.won ? 0 : 1),
-placed: (((_metrics$bySignal$sig5 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig5 === void 0 ? void 0 : _metrics$bySignal$sig5.placed) || 0) + cost,
-earned: (((_metrics$bySignal$sig6 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig6 === void 0 ? void 0 : _metrics$bySignal$sig6.earned) || 0) + sim.net
+filled: (metrics.bySignal[sig]?.filled || 0) + 1,
+wins: (metrics.bySignal[sig]?.wins || 0) + (sim.won ? 1 : 0),
+losses: (metrics.bySignal[sig]?.losses || 0) + (sim.won ? 0 : 1),
+placed: (metrics.bySignal[sig]?.placed || 0) + cost,
+earned: (metrics.bySignal[sig]?.earned || 0) + sim.net
 }
 }
 });
@@ -1131,16 +1120,13 @@ const eligible = markets.filter(m => {
 const d = daysUntil(m.close_time);
 return d > 0 && d < config.daysWindow;
 }).sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
-const withSig = eligible.map(m => {
-var _weatherCache$m$ticke2;
-return {
+const withSig = eligible.map(m => ({
 …m,
 days: daysUntil(m.close_time),
-signal: analyzeMarket(m, config, (_weatherCache$m$ticke2 = weatherCache[m.ticker]) === null || _weatherCache$m$ticke2 === void 0 ? void 0 : _weatherCache$m$ticke2.data)
-};
-});
+signal: analyzeMarket(m, config, weatherCache[m.ticker]?.data)
+}));
 const fmt$ = c => `$${((c || 0) / 100).toFixed(2)}`;
-const currentBal = balance !== null && balance !== void 0 ? balance : config.startBalanceCents;
+const currentBal = balance ?? config.startBalanceCents;
 const dynExposure = Math.min(5000 + Math.floor(Math.max(0, currentBal - config.startBalanceCents) / 10000) * 5000, currentBal * 0.5);
 const winRate = metrics.wins + metrics.losses > 0 ? (metrics.wins / (metrics.wins + metrics.losses) * 100).toFixed(0) : “–”;
 const tabs = [{
@@ -1635,11 +1621,10 @@ fontSize: 8
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
-function Tag(_ref7) {
-let {
+function Tag({
 col,
 children
-} = _ref7;
+}) {
 return /*#**PURE***/React.createElement(“span”, {
 style: {
 fontSize: 8,
@@ -1652,10 +1637,9 @@ padding: “2px 5px”
 }
 }, children);
 }
-function UBadge(_ref8) {
-let {
+function UBadge({
 days
-} = _ref8;
+}) {
 const [col, txt] = days < 0.5 ? [”#ff3b30”, “⚡TODAY”] : days < 1 ? [”#ff6b6b”, `${(days * 24).toFixed(0)}h`] : days < 2 ? [”#f5a623”, `~${days.toFixed(1)}d`] : [”#444”, `${days.toFixed(1)}d`];
 return /*#**PURE***/React.createElement(“span”, {
 style: {
@@ -1669,10 +1653,9 @@ flexShrink: 0
 }
 }, txt);
 }
-function CatBadge(_ref9) {
-let {
+function CatBadge({
 cat
-} = _ref9;
+}) {
 const colors = {
 economics: “#f5a623”,
 politics: “#60a5fa”,
@@ -1699,8 +1682,7 @@ fontWeight: 600
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-function DashScreen(_ref0) {
-let {
+function DashScreen({
 pnl,
 withSig,
 eligible,
@@ -1721,7 +1703,7 @@ metrics,
 breakerStatus,
 breaker,
 setBreakerStatus
-} = _ref0;
+}) {
 const total = pnl.realized;
 const gainPct = ((currentBal - config.startBalanceCents) / config.startBalanceCents * 100).toFixed(1);
 const topSigs = withSig.filter(m => m.signal).slice(0, 4);
@@ -1776,9 +1758,7 @@ gap: 12,
 marginTop: 6,
 flexWrap: “wrap”
 }
-}, [[“Evaluated”, metrics.evaluated, “#aaa”], [“Placed”, metrics.filled, “#00ff88”], [“Win Rate”, winRate === “–” ? “–” : winRate + “%”, “#00ff88”], [“Net”, fmt$(metrics.dollarEarned), metrics.dollarEarned >= 0 ? “#00ff88” : “#ff6b6b”]].map(_ref1 => {
-let [l, v, c] = _ref1;
-return /*#**PURE***/React.createElement(“span”, {
+}, [[“Evaluated”, metrics.evaluated, “#aaa”], [“Placed”, metrics.filled, “#00ff88”], [“Win Rate”, winRate === “–” ? “–” : winRate + “%”, “#00ff88”], [“Net”, fmt$(metrics.dollarEarned), metrics.dollarEarned >= 0 ? “#00ff88” : “#ff6b6b”]].map(([l, v, c]) => /*#**PURE***/React.createElement(“span”, {
 key: l,
 style: {
 fontSize: 11,
@@ -1789,8 +1769,7 @@ style: {
 color: c,
 fontWeight: 700
 }
-}, v));
-}))), (breakerStatus.errors > 0 || breakerStatus.consecLosses > 2) && /*#**PURE***/React.createElement(“div”, {
+}, v))))), (breakerStatus.errors > 0 || breakerStatus.consecLosses > 2) && /*#**PURE***/React.createElement(“div”, {
 style: {
 background: “#1a0a00”,
 border: “1px solid #f5a62333”,
@@ -1883,9 +1862,7 @@ style: {
 display: “flex”,
 gap: 8
 }
-}, [[eligible.length, “Markets”, “#fff”], [withSig.filter(m => m.signal).length, “Signals”, “#00ff88”], [fmt$(dynExposure), “Exposure”, “#f5a623”], [fmt$(config.startBalanceCents * config.stopLossPct), “Stop-loss”, “#ff6b6b”]].map(_ref10 => {
-let [n, l, c] = _ref10;
-return /*#**PURE***/React.createElement(“div”, {
+}, [[eligible.length, “Markets”, “#fff”], [withSig.filter(m => m.signal).length, “Signals”, “#00ff88”], [fmt$(dynExposure), “Exposure”, “#f5a623”], [fmt$(config.startBalanceCents * config.stopLossPct), “Stop-loss”, “#ff6b6b”]].map(([n, l, c]) => /*#**PURE***/React.createElement(“div”, {
 key: l,
 style: {
 flex: 1,
@@ -1908,8 +1885,7 @@ color: “#333”,
 textTransform: “uppercase”,
 marginTop: 2
 }
-}, l));
-})), topSigs.length > 0 && /*#**PURE***/React.createElement(React.Fragment, null, /*#**PURE***/React.createElement(“div”, {
+}, l)))), topSigs.length > 0 && /*#**PURE***/React.createElement(React.Fragment, null, /*#**PURE***/React.createElement(“div”, {
 style: S.secH
 }, “\uD83D\uDD25 Live Signals \u2014 soonest expiry first”), topSigs.map(m => /*#**PURE***/React.createElement(“div”, {
 key: m.ticker,
@@ -2000,8 +1976,7 @@ marginRight: 6
 }
 
 // ── Markets ───────────────────────────────────────────────────────────────────
-function MarketsScreen(_ref11) {
-let {
+function MarketsScreen({
 markets,
 fmt$,
 addLog,
@@ -2015,7 +1990,7 @@ setPnl,
 setBalance,
 updMetrics,
 metrics
-} = _ref11;
+}) {
 const [filter, setFilter] = useState(“all”);
 const [search, setSearch] = useState(””);
 const [catFilter, setCatFilter] = useState(“all”);
@@ -2032,14 +2007,13 @@ const price = m.signal.side === “no” ? m.no_bid : m.yes_bid;
 const cost = kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days);
 addLog(`Manual [${m.signal.signal}]: ${m.ticker} | $${(cost / 100).toFixed(2)} | ${m.signal.label}`, “trade”);
 if (simulate) {
-var _metrics$bySignal$sig7, _metrics$bySignal$sig8, _metrics$bySignal$sig9, _metrics$bySignal$sig0, _metrics$bySignal$sig1;
 const sim = simulateTrade(m.signal, price, cost);
 if (!sim.filled) {
 addLog(`⟳ Not filled`, “info”);
 return;
 }
 tradedRef.current.add(m.ticker);
-setBalance(b => (b !== null && b !== void 0 ? b : 10000) + sim.net);
+setBalance(b => (b ?? 10000) + sim.net);
 setPnl(p => ({
 …p,
 realized: p.realized + sim.net
@@ -2053,11 +2027,11 @@ dollarPlaced: metrics.dollarPlaced + cost,
 dollarEarned: metrics.dollarEarned + sim.net,
 bySignal: {
 [sig]: {
-filled: (((_metrics$bySignal$sig7 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig7 === void 0 ? void 0 : _metrics$bySignal$sig7.filled) || 0) + 1,
-wins: (((_metrics$bySignal$sig8 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig8 === void 0 ? void 0 : _metrics$bySignal$sig8.wins) || 0) + (sim.won ? 1 : 0),
-losses: (((_metrics$bySignal$sig9 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig9 === void 0 ? void 0 : _metrics$bySignal$sig9.losses) || 0) + (sim.won ? 0 : 1),
-placed: (((_metrics$bySignal$sig0 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig0 === void 0 ? void 0 : _metrics$bySignal$sig0.placed) || 0) + cost,
-earned: (((_metrics$bySignal$sig1 = metrics.bySignal[sig]) === null || _metrics$bySignal$sig1 === void 0 ? void 0 : _metrics$bySignal$sig1.earned) || 0) + sim.net
+filled: (metrics.bySignal[sig]?.filled || 0) + 1,
+wins: (metrics.bySignal[sig]?.wins || 0) + (sim.won ? 1 : 0),
+losses: (metrics.bySignal[sig]?.losses || 0) + (sim.won ? 0 : 1),
+placed: (metrics.bySignal[sig]?.placed || 0) + cost,
+earned: (metrics.bySignal[sig]?.earned || 0) + sim.net
 }
 }
 });
@@ -2132,9 +2106,8 @@ color: “#444”
 }, shown.length, “ markets shown”, isSportsMarket ? “” : “ (sports blocked)”), shown.length === 0 && /*#**PURE***/React.createElement(“div”, {
 style: S.empty
 }, “No markets match your filters.”), shown.map(m => {
-var _m$signal;
 const blocked = isSportsMarket(m);
-const price = ((_m$signal = m.signal) === null || _m$signal === void 0 ? void 0 : _m$signal.side) === “no” ? m.no_bid : m.yes_bid;
+const price = m.signal?.side === “no” ? m.no_bid : m.yes_bid;
 const cost = m.signal ? kellySize(m.signal.estWinProb, price, config.kellyFraction, config.maxBetCents, m.days) : 0;
 const wc = weatherCache[m.ticker];
 const isW = (m.category || “”).toLowerCase() === “weather”;
@@ -2193,9 +2166,7 @@ flexWrap: “wrap”
 }
 }, /*#**PURE***/React.createElement(CatBadge, {
 cat: m.category
-}), [[“YES”, `${m.yes_bid}¢`], [“NO”, `${m.no_bid}¢`], [“VOL”, m.volume ? (m.volume / 1000).toFixed(0) + “k” : “–”]].map(_ref12 => {
-let [k, v] = _ref12;
-return /*#**PURE***/React.createElement(“span”, {
+}), [[“YES”, `${m.yes_bid}¢`], [“NO”, `${m.no_bid}¢`], [“VOL”, m.volume ? (m.volume / 1000).toFixed(0) + “k” : “–”]].map(([k, v]) => /*#**PURE***/React.createElement(“span”, {
 key: k,
 style: {
 fontSize: 10,
@@ -2206,8 +2177,7 @@ style: {
 color: “#aaa”,
 fontWeight: 700
 }
-}, v));
-})), !blocked && m.signal && /*#**PURE***/React.createElement(“div”, {
+}, v)))), !blocked && m.signal && /*#**PURE***/React.createElement(“div”, {
 style: {
 display: “flex”,
 alignItems: “center”,
@@ -2236,10 +2206,10 @@ style: {
 display: “flex”,
 gap: 6
 }
-}, isW && !(wc !== null && wc !== void 0 && wc.loading) && !(wc !== null && wc !== void 0 && wc.data) && /*#**PURE***/React.createElement(“button”, {
+}, isW && !wc?.loading && !wc?.data && /*#**PURE***/React.createElement(“button”, {
 style: S.btnWeather,
 onClick: () => fetchWeather(m.ticker, m.title)
-}, “\uD83C\uDF24 Weather”), isW && (wc === null || wc === void 0 ? void 0 : wc.loading) && /*#**PURE***/React.createElement(“span”, {
+}, “\uD83C\uDF24 Weather”), isW && wc?.loading && /*#**PURE***/React.createElement(“span”, {
 style: {
 fontSize: 10,
 color: “#38bdf8”
@@ -2247,10 +2217,10 @@ color: “#38bdf8”
 }, “Analyzing\u2026”), /*#**PURE***/React.createElement(“button”, {
 style: S.btnTrade,
 onClick: () => doTrade(m)
-}, “Trade \u2192”))), !blocked && !m.signal && isW && !(wc !== null && wc !== void 0 && wc.data) && /*#**PURE***/React.createElement(“button”, {
+}, “Trade \u2192”))), !blocked && !m.signal && isW && !wc?.data && /*#**PURE***/React.createElement(“button”, {
 style: S.btnWeather,
 onClick: () => fetchWeather(m.ticker, m.title)
-}, “\uD83C\uDF24 Analyze weather data”), (wc === null || wc === void 0 ? void 0 : wc.data) && /*#**PURE***/React.createElement(“div”, {
+}, “\uD83C\uDF24 Analyze weather data”), wc?.data && /*#**PURE***/React.createElement(“div”, {
 style: {
 background: “#06101a”,
 border: “1px solid #38bdf822”,
@@ -2265,15 +2235,14 @@ lineHeight: 1.5
 }
 
 // ── Metrics ───────────────────────────────────────────────────────────────────
-function MetricsScreen(_ref13) {
-let {
+function MetricsScreen({
 metrics,
 winRate,
 fmt$,
 pnl,
 config,
 resetMetrics
-} = _ref13;
+}) {
 const roi = config.startBalanceCents > 0 ? (metrics.dollarEarned / config.startBalanceCents * 100).toFixed(1) : “0.0”;
 const fillRate = metrics.attempted > 0 ? (metrics.filled / metrics.attempted * 100).toFixed(0) : “–”;
 const avgWin = metrics.wins > 0 ? metrics.dollarEarned / metrics.wins / 100 : 0;
@@ -2299,9 +2268,7 @@ display: “grid”,
 gridTemplateColumns: “1fr 1fr”,
 gap: 10
 }
-}, [[“Markets Evaluated”, metrics.evaluated, “#aaa”], [“Signals Generated”, metrics.signalsFound, “#00ff88”], [“Orders Attempted”, metrics.attempted, “#fff”], [“Orders Filled”, metrics.filled, “#00ff88”], [“Fill Rate”, fillRate === “–” ? “–” : fillRate + “%”, “#f5a623”], [“Wins”, metrics.wins, “#00ff88”], [“Losses”, metrics.losses, “#ff6b6b”], [“Win Rate”, winRate === “–” ? “–” : winRate + “%”, metrics.wins > metrics.losses ? “#00ff88” : “#ff6b6b”], [“Total $ Placed”, fmt$(metrics.dollarPlaced), “#fff”], [“Total $ Earned”, (metrics.dollarEarned >= 0 ? “+” : “”) + fmt$(Math.abs(metrics.dollarEarned)), metrics.dollarEarned >= 0 ? “#00ff88” : “#ff6b6b”], [“ROI”, (parseFloat(roi) >= 0 ? “+” : “”) + roi + “%”, parseFloat(roi) >= 0 ? “#00ff88” : “#ff6b6b”], [“Avg Win”, avgWin > 0 ? “+$” + avgWin.toFixed(2) : “–”, “#00ff88”]].map(_ref14 => {
-let [l, v, c] = _ref14;
-return /*#**PURE***/React.createElement(“div”, {
+}, [[“Markets Evaluated”, metrics.evaluated, “#aaa”], [“Signals Generated”, metrics.signalsFound, “#00ff88”], [“Orders Attempted”, metrics.attempted, “#fff”], [“Orders Filled”, metrics.filled, “#00ff88”], [“Fill Rate”, fillRate === “–” ? “–” : fillRate + “%”, “#f5a623”], [“Wins”, metrics.wins, “#00ff88”], [“Losses”, metrics.losses, “#ff6b6b”], [“Win Rate”, winRate === “–” ? “–” : winRate + “%”, metrics.wins > metrics.losses ? “#00ff88” : “#ff6b6b”], [“Total $ Placed”, fmt$(metrics.dollarPlaced), “#fff”], [“Total $ Earned”, (metrics.dollarEarned >= 0 ? “+” : “”) + fmt$(Math.abs(metrics.dollarEarned)), metrics.dollarEarned >= 0 ? “#00ff88” : “#ff6b6b”], [“ROI”, (parseFloat(roi) >= 0 ? “+” : “”) + roi + “%”, parseFloat(roi) >= 0 ? “#00ff88” : “#ff6b6b”], [“Avg Win”, avgWin > 0 ? “+$” + avgWin.toFixed(2) : “–”, “#00ff88”]].map(([l, v, c]) => /*#**PURE***/React.createElement(“div”, {
 key: l,
 style: {
 background: “#080c10”,
@@ -2322,16 +2289,14 @@ fontSize: 18,
 fontWeight: 900,
 color: c
 }
-}, v));
-}))), /*#**PURE***/React.createElement(“div”, {
+}, v))))), /*#**PURE***/React.createElement(“div”, {
 style: {
 fontSize: 11,
 fontWeight: 700,
 color: “#aaa”,
 marginTop: 4
 }
-}, “By Strategy”), Object.entries(metrics.bySignal).map(_ref15 => {
-let [sig, s] = _ref15;
+}, “By Strategy”), Object.entries(metrics.bySignal).map(([sig, s]) => {
 if (!s.attempted) return null;
 const wr = s.wins + s.losses > 0 ? (s.wins / (s.wins + s.losses) * 100).toFixed(0) + “%” : “–”;
 const cols = {
@@ -2368,9 +2333,7 @@ display: “flex”,
 gap: 14,
 flexWrap: “wrap”
 }
-}, [[“Attempted”, s.attempted, “#aaa”], [“Filled”, s.filled, “#fff”], [“Wins”, s.wins, “#00ff88”], [“Losses”, s.losses, “#ff6b6b”], [“Win %”, wr, cols[sig]], [”$ Placed”, fmt$(s.placed), “#fff”], [”$ Earned”, (s.earned >= 0 ? “+” : “”) + fmt$(Math.abs(s.earned)), s.earned >= 0 ? “#00ff88” : “#ff6b6b”]].map(_ref16 => {
-let [l, v, c] = _ref16;
-return /*#**PURE***/React.createElement(“div”, {
+}, [[“Attempted”, s.attempted, “#aaa”], [“Filled”, s.filled, “#fff”], [“Wins”, s.wins, “#00ff88”], [“Losses”, s.losses, “#ff6b6b”], [“Win %”, wr, cols[sig]], [”$ Placed”, fmt$(s.placed), “#fff”], [”$ Earned”, (s.earned >= 0 ? “+” : “”) + fmt$(Math.abs(s.earned)), s.earned >= 0 ? “#00ff88” : “#ff6b6b”]].map(([l, v, c]) => /*#**PURE***/React.createElement(“div”, {
 key: l
 }, /*#**PURE***/React.createElement(“span”, {
 style: {
@@ -2383,8 +2346,7 @@ fontSize: 12,
 fontWeight: 700,
 color: c
 }
-}, v));
-})));
+}, v)))));
 }), /*#**PURE***/React.createElement(“button”, {
 style: {
 …S.btnGhost,
@@ -2397,22 +2359,18 @@ onClick: resetMetrics
 }
 
 // ── Weather Hub ───────────────────────────────────────────────────────────────
-function WeatherScreen(_ref17) {
-let {
+function WeatherScreen({
 markets,
 weatherCache,
 fetchWeather,
 config
-} = _ref17;
+}) {
 const weatherMkts = markets.filter(m => {
 const t = (m.title || “”).toLowerCase();
 const c = (m.category || “”).toLowerCase();
 return c === “weather” || t.includes(“weather”) || t.includes(“snow”) || t.includes(“rain”) || t.includes(“hurricane”) || t.includes(“temperature”) || t.includes(“storm”) || t.includes(“flood”) || t.includes(“drought”);
 });
-const loaded = weatherMkts.filter(m => {
-var _weatherCache$m$ticke3;
-return (_weatherCache$m$ticke3 = weatherCache[m.ticker]) === null || _weatherCache$m$ticke3 === void 0 ? void 0 : _weatherCache$m$ticke3.data;
-});
+const loaded = weatherMkts.filter(m => weatherCache[m.ticker]?.data);
 const pending = weatherMkts.filter(m => !weatherCache[m.ticker]);
 return /*#**PURE***/React.createElement(“div”, {
 style: S.page
@@ -2441,10 +2399,7 @@ style: S.empty
 }, “No weather markets found in the “, config.daysWindow, “-day window.”), pending.length > 0 && /*#**PURE***/React.createElement(“button”, {
 style: S.btnG,
 onClick: () => pending.slice(0, 5).forEach(m => fetchWeather(m.ticker, m.title))
-}, “\uD83C\uDF24 Analyze Top “, Math.min(5, pending.length), “ Weather Markets”), weatherMkts.some(m => {
-var _weatherCache$m$ticke4;
-return (_weatherCache$m$ticke4 = weatherCache[m.ticker]) === null || _weatherCache$m$ticke4 === void 0 ? void 0 : _weatherCache$m$ticke4.loading;
-}) && /*#**PURE***/React.createElement(“div”, {
+}, “\uD83C\uDF24 Analyze Top “, Math.min(5, pending.length), “ Weather Markets”), weatherMkts.some(m => weatherCache[m.ticker]?.loading) && /*#**PURE***/React.createElement(“div”, {
 style: {
 background: “#06101a”,
 border: “1px solid #38bdf822”,
@@ -2454,7 +2409,6 @@ fontSize: 12,
 color: “#38bdf8”
 }
 }, “\u27F3 Fetching weather data\u2026”), weatherMkts.map(m => {
-var _wc$data$overall, *wc$data$recommended*;
 const wc = weatherCache[m.ticker];
 return /*#**PURE***/React.createElement(“div”, {
 key: m.ticker,
@@ -2509,12 +2463,12 @@ color: “#aaa”
 }, m.no_bid, “\xA2”))), !wc && /*#**PURE***/React.createElement(“button”, {
 style: S.btnWeather,
 onClick: () => fetchWeather(m.ticker, m.title)
-}, “\uD83C\uDF24 Fetch weather analysis”), (wc === null || wc === void 0 ? void 0 : wc.loading) && /*#**PURE***/React.createElement(“div”, {
+}, “\uD83C\uDF24 Fetch weather analysis”), wc?.loading && /*#**PURE***/React.createElement(“div”, {
 style: {
 fontSize: 11,
 color: “#38bdf8”
 }
-}, “Searching weather data\u2026”), (wc === null || wc === void 0 ? void 0 : wc.data) && /*#**PURE***/React.createElement(“div”, {
+}, “Searching weather data\u2026”), wc?.data && /*#**PURE***/React.createElement(“div”, {
 style: {
 background: “#06101a”,
 border: “1px solid #38bdf822”,
@@ -2541,7 +2495,7 @@ bearish: “#ff6b6b”,
 neutral: “#888”
 }[wc.data.overall] || “#888”
 }
-}, (_wc$data$overall = wc.data.overall) === null || _wc$data$overall === void 0 ? void 0 : _wc$data$overall.toUpperCase()), /*#**PURE***/React.createElement(“span”, {
+}, wc.data.overall?.toUpperCase()), /*#**PURE***/React.createElement(“span”, {
 style: {
 fontSize: 11,
 color: “#555”
@@ -2566,7 +2520,7 @@ color: “#555”
 style: {
 color: wc.data.recommended_side === “yes” ? “#00ff88” : wc.data.recommended_side === “no” ? “#ff6b6b” : “#888”
 }
-}, (*wc$data$recommended* = wc.data.recommended_side) === null || *wc$data$recommended* === void 0 ? void 0 : *wc$data$recommended*.toUpperCase()))), /*#**PURE***/React.createElement(“p”, {
+}, wc.data.recommended_side?.toUpperCase()))), /*#**PURE***/React.createElement(“p”, {
 style: {
 fontSize: 11,
 color: “#777”,
@@ -2578,15 +2532,14 @@ lineHeight: 1.5
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-function SettingsScreen(_ref18) {
-let {
+function SettingsScreen({
 config,
 setConfig,
 fmt$,
 paper,
 demo,
 onLogout
-} = _ref18;
+}) {
 const set = (k, v) => setConfig(c => ({
 …c,
 [k]: v
@@ -2666,8 +2619,7 @@ mn: 2,
 mx: 20,
 st: 1,
 d: v => `${v}`
-}].map(_ref19 => {
-let {
+}].map(({
 l,
 k,
 mn,
@@ -2675,7 +2627,7 @@ mx,
 st,
 d,
 f
-} = _ref19;
+}) => {
 const raw = f ? Math.round(config[k] * f) : config[k];
 return /*#**PURE***/React.createElement(“div”, {
 key: k,
@@ -2719,9 +2671,7 @@ border: “1px solid #1a2230”,
 borderRadius: 12,
 overflow: “hidden”
 }
-}, [[“Fade extremes (>92% / <8%)”, “fadeExtremes”], [“Volume momentum edge”, “volumeEdge”]].map(_ref20 => {
-let [l, k] = _ref20;
-return /*#**PURE***/React.createElement(“div”, {
+}, [[“Fade extremes (>92% / <8%)”, “fadeExtremes”], [“Volume momentum edge”, “volumeEdge”]].map(([l, k]) => /*#**PURE***/React.createElement(“div”, {
 key: k,
 style: {
 display: “flex”,
@@ -2751,8 +2701,7 @@ style: {
 …S.thumb,
 transform: config[k] ? “translateX(20px)” : “translateX(2px)”
 }
-})));
-})), /*#**PURE***/React.createElement(“div”, {
+}))))), /*#**PURE***/React.createElement(“div”, {
 style: {
 background: “#0a0f14”,
 border: “1px solid #1a2230”,
@@ -2803,9 +2752,7 @@ fontWeight: 700,
 color: “#aaa”,
 marginBottom: 10
 }
-}, “Strategy Guide”), [[“ARB”, “#00ff88”, “YES+NO < 93¢ = guaranteed profit regardless of outcome”], [“VOL”, “#00ff88”, “High volume + tight spread + clear direction = smart money confirmation”], [“FADE”, “#ff6b6b”, “Markets >92% or <8% overweight recency bias — fade the extreme”], [“WTHR”, “#38bdf8”, “Weather data from NOAA/NWS adjusts edge on weather markets”], [“Circuit”, “#f5a623”, “Auto-halts if 5+ API errors or 6+ consecutive losses in a session”], [“Kelly”, “#88aaff”, “25% fractional Kelly compounds gains while limiting drawdown”]].map(_ref21 => {
-let [t, c, d] = _ref21;
-return /*#**PURE***/React.createElement(“p”, {
+}, “Strategy Guide”), [[“ARB”, “#00ff88”, “YES+NO < 93¢ = guaranteed profit regardless of outcome”], [“VOL”, “#00ff88”, “High volume + tight spread + clear direction = smart money confirmation”], [“FADE”, “#ff6b6b”, “Markets >92% or <8% overweight recency bias — fade the extreme”], [“WTHR”, “#38bdf8”, “Weather data from NOAA/NWS adjusts edge on weather markets”], [“Circuit”, “#f5a623”, “Auto-halts if 5+ API errors or 6+ consecutive losses in a session”], [“Kelly”, “#88aaff”, “25% fractional Kelly compounds gains while limiting drawdown”]].map(([t, c, d]) => /*#**PURE***/React.createElement(“p”, {
 key: t,
 style: {
 fontSize: 11,
@@ -2817,8 +2764,7 @@ lineHeight: 1.65
 style: {
 color: c
 }
-}, “[”, t, “]”), “ “, d);
-})), /*#**PURE***/React.createElement(“button”, {
+}, “[”, t, “]”), “ “, d))), /*#**PURE***/React.createElement(“button”, {
 style: {
 background: “transparent”,
 color: “#ff6b6b”,
@@ -2834,11 +2780,10 @@ onClick: onLogout
 }
 
 // ── Proxy Field ───────────────────────────────────────────────────────────────
-function ProxyField(_ref22) {
-let {
+function ProxyField({
 proxyUrl,
 setProxyUrl
-} = _ref22;
+}) {
 const [open, setOpen] = useState(!!proxyUrl);
 return /*#**PURE***/React.createElement(“div”, {
 style: {
@@ -2904,10 +2849,9 @@ onChange: e => setProxyUrl(e.target.value)
 }
 
 // ── Setup Guide ───────────────────────────────────────────────────────────────
-function SetupGuide(_ref23) {
-let {
+function SetupGuide({
 expanded = false
-} = _ref23;
+}) {
 const [open, setOpen] = useState(expanded);
 const [copied, setCopied] = useState(false);
 const copy = () => {
@@ -2950,9 +2894,7 @@ display: “flex”,
 flexDirection: “column”,
 gap: 8
 }
-}, [[“1”, “Go to”, “workers.cloudflare.com”, “https://workers.cloudflare.com”, “→ free account”], [“2”, “Click”, “Create Worker”, “”, “, paste code below”], [“3”, “Click Deploy, copy the”, “*.workers.dev URL”, “”, “”], [“4”, “Paste that URL in the Proxy field above”, “”, “”, “”]].map(_ref24 => {
-let [n, pre, link, href, post] = _ref24;
-return /*#**PURE***/React.createElement(“div”, {
+}, [[“1”, “Go to”, “workers.cloudflare.com”, “https://workers.cloudflare.com”, “→ free account”], [“2”, “Click”, “Create Worker”, “”, “, paste code below”], [“3”, “Click Deploy, copy the”, “*.workers.dev URL”, “”, “”], [“4”, “Paste that URL in the Proxy field above”, “”, “”, “”]].map(([n, pre, link, href, post]) => /*#**PURE***/React.createElement(“div”, {
 key: n,
 style: {
 display: “flex”,
@@ -2983,8 +2925,7 @@ textDecoration: “none”
 style: {
 color: “#aaa”
 }
-}, link), “ “, post));
-}), /*#**PURE***/React.createElement(“div”, {
+}, link), “ “, post))), /*#**PURE***/React.createElement(“div”, {
 style: {
 position: “relative”
 }
@@ -3235,16 +3176,13 @@ borderRadius: “50%”,
 background: “#fff”,
 transition: “transform 0.3s”
 }
-};
-try {
-ReactDOM.createRoot(document.getElementById(‘root’)).render(
-React.createElement(KalshiTrader, null)
-);
+};try {
+var root = ReactDOM.createRoot(document.getElementById(‘root’));
+root.render(React.createElement(KalshiTrader, null));
 } catch(e) {
 document.getElementById(‘root’).innerHTML =
-‘<div style="color:#ff6b6b;padding:24px;font-family:monospace;font-size:13px;background:#06080b;min-height:100vh">’ +
-‘<div style="font-size:18px;margin-bottom:12px">⚠ Render Error</div>’ +
-‘<div style="color:#888">’ + e.message + ‘</div></div>’;
+‘<div style="padding:24px;color:#ff6b6b;white-space:pre-wrap;font-size:12px">’ +
+‘<b style="font-size:16px;display:block;margin-bottom:12px">Render Error</b>’ + e.message + ‘\n’ + e.stack + ‘</div>’;
 }
 </script>
 
