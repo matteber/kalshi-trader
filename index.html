@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -78,1179 +77,1179 @@ async function rsaSign(key, keyId, method, path) {
 }
 
 // === Kalshi API ===
-var KALSHI_BASE = “https://api.elections.kalshi.com/trade-api/v2”;
-var _proxy = “”,
-_keyId = “”,
-_key = null;
+var KALSHI_BASE = "https://api.elections.kalshi.com/trade-api/v2";
+var _proxy = "",
+  _keyId = "",
+  _key = null;
 function setProxy(url) {
-_proxy = url.replace(//+$/, “”);
+  _proxy = url.replace(/\/+$/, "");
 }
 async function setCredentials(kid, pem) {
-_keyId = kid.trim();
-_key = await importPrivateKey(pem);
+  _keyId = kid.trim();
+  _key = await importPrivateKey(pem);
 }
 async function kalshiReq(path, method, body) {
-method = method || “GET”;
-var base = _proxy || KALSHI_BASE;
-var authH = await rsaSign(_key, _keyId, method, “/trade-api/v2” + path);
-var h = {
-“Content-Type”: “application/json”
-};
-var keys = Object.keys(authH);
-for (var i = 0; i < keys.length; i++) h[keys[i]] = authH[keys[i]];
-var opts = {
-method: method,
-headers: h
-};
-if (!_proxy) opts.mode = “cors”;
-if (body) opts.body = JSON.stringify(body);
-var res;
-try {
-res = await fetch(base + path, opts);
-} catch (err) {
-var em = err.message || “”;
-if (!_proxy && (em.indexOf(“Failed to fetch”) >= 0 || em.indexOf(“Load failed”) >= 0 || em.indexOf(“NetworkError”) >= 0)) throw new Error(“CORS_BLOCKED”);
-throw err;
-}
-if (!res.ok) {
-var txt = “”;
-try {
-txt = await res.text();
-} catch (e2) {/* */}
-throw new Error(“HTTP “ + res.status + “: “ + txt.slice(0, 200));
-}
-return res.json();
+  method = method || "GET";
+  var base = _proxy || KALSHI_BASE;
+  var authH = await rsaSign(_key, _keyId, method, "/trade-api/v2" + path);
+  var h = {
+    "Content-Type": "application/json"
+  };
+  var keys = Object.keys(authH);
+  for (var i = 0; i < keys.length; i++) h[keys[i]] = authH[keys[i]];
+  var opts = {
+    method: method,
+    headers: h
+  };
+  if (!_proxy) opts.mode = "cors";
+  if (body) opts.body = JSON.stringify(body);
+  var res;
+  try {
+    res = await fetch(base + path, opts);
+  } catch (err) {
+    var em = err.message || "";
+    if (!_proxy && (em.indexOf("Failed to fetch") >= 0 || em.indexOf("Load failed") >= 0 || em.indexOf("NetworkError") >= 0)) throw new Error("CORS_BLOCKED");
+    throw err;
+  }
+  if (!res.ok) {
+    var txt = "";
+    try {
+      txt = await res.text();
+    } catch (e2) {/* */}
+    throw new Error("HTTP " + res.status + ": " + txt.slice(0, 200));
+  }
+  return res.json();
 }
 
-// Parse dollar string to cents: “0.5600” -> 56
+// Parse dollar string to cents: "0.5600" -> 56
 function d2c(v) {
-if (v == null || v === “”) return null;
-var n = Math.round(parseFloat(v) * 100);
-return isNaN(n) ? null : n;
+  if (v == null || v === "") return null;
+  var n = Math.round(parseFloat(v) * 100);
+  return isNaN(n) ? null : n;
 }
 function normalizeMarket(m) {
-var yb = d2c(m.yes_bid_dollars);
-var ya = d2c(m.yes_ask_dollars);
-var nb = d2c(m.no_bid_dollars);
-var na = d2c(m.no_ask_dollars);
-var lp = d2c(m.last_price_dollars);
-var vol = parseFloat(m.volume_24h_fp || m.volume_fp || “0”) || 0;
-// Fallbacks
-if (yb == null) yb = lp != null ? lp : 50;
-if (ya == null) ya = yb + 4;
-if (nb == null) nb = 100 - ya;
-if (na == null) na = 100 - yb;
-if (lp == null) lp = yb;
-return {
-ticker: m.ticker || “”,
-event_ticker: m.event_ticker || “”,
-title: m.title || m.yes_sub_title || m.ticker || “?”,
-subtitle: m.subtitle || m.yes_sub_title || “”,
-close_time: m.close_time || m.latest_expiration_time || “”,
-status: m.status || “”,
-yes_bid: yb,
-yes_ask: ya,
-no_bid: nb,
-no_ask: na,
-last_price: lp,
-volume: vol
-};
+  var yb = d2c(m.yes_bid_dollars);
+  var ya = d2c(m.yes_ask_dollars);
+  var nb = d2c(m.no_bid_dollars);
+  var na = d2c(m.no_ask_dollars);
+  var lp = d2c(m.last_price_dollars);
+  var vol = parseFloat(m.volume_24h_fp || m.volume_fp || "0") || 0;
+  // Fallbacks
+  if (yb == null) yb = lp != null ? lp : 50;
+  if (ya == null) ya = yb + 4;
+  if (nb == null) nb = 100 - ya;
+  if (na == null) na = 100 - yb;
+  if (lp == null) lp = yb;
+  return {
+    ticker: m.ticker || "",
+    event_ticker: m.event_ticker || "",
+    title: m.title || m.yes_sub_title || m.ticker || "?",
+    subtitle: m.subtitle || m.yes_sub_title || "",
+    close_time: m.close_time || m.latest_expiration_time || "",
+    status: m.status || "",
+    yes_bid: yb,
+    yes_ask: ya,
+    no_bid: nb,
+    no_ask: na,
+    last_price: lp,
+    volume: vol
+  };
 }
 
 // === Fetch all open markets with pagination ===
 async function fetchMarkets() {
-var all = [];
-var cursor = “”;
-var pages = 0;
-while (pages < 15) {
-var qs = “status=open&limit=1000”;
-if (cursor) qs += “&cursor=” + encodeURIComponent(cursor);
-var data = await kalshiReq(”/markets?” + qs);
-var mkts = data.markets || [];
-for (var i = 0; i < mkts.length; i++) {
-all.push(normalizeMarket(mkts[i]));
-}
-cursor = data.cursor || “”;
-if (!cursor || mkts.length === 0) break;
-pages++;
-}
-return all;
+  var all = [];
+  var cursor = "";
+  var pages = 0;
+  while (pages < 15) {
+    var qs = "status=open&limit=1000";
+    if (cursor) qs += "&cursor=" + encodeURIComponent(cursor);
+    var data = await kalshiReq("/markets?" + qs);
+    var mkts = data.markets || [];
+    for (var i = 0; i < mkts.length; i++) {
+      all.push(normalizeMarket(mkts[i]));
+    }
+    cursor = data.cursor || "";
+    if (!cursor || mkts.length === 0) break;
+    pages++;
+  }
+  return all;
 }
 
 // === Strategy ===
 function daysUntil(iso) {
-if (!iso) return 999;
-return (new Date(iso) - Date.now()) / 86400000;
+  if (!iso) return 999;
+  return (new Date(iso) - Date.now()) / 86400000;
 }
 function analyzeMarket(m, cfg) {
-var days = daysUntil(m.close_time);
-if (days <= 0 || days > (cfg.daysWindow || 14)) return null;
-var yb = m.yes_bid,
-nb = m.no_bid,
-ya = m.yes_ask;
-var sum = yb + nb;
-var mid = Math.round((yb + ya) / 2);
-// Arbitrage
-if (sum > 0 && sum <= 93) {
-return {
-signal: “ARB”,
-side: “yes”,
-edge: (100 - sum) / 100,
-prob: 1.0,
-price: yb,
-label: “Arb +” + (100 - sum) + “c”
-};
-}
-// Volume momentum
-var spread = ya - yb;
-if (m.volume >= 5000 && spread <= 6 && spread >= 0) {
-if (mid >= 60 && mid <= 85) {
-var e1 = (mid - 50) / 100 * 0.15;
-if (e1 >= cfg.minEdge) return {
-signal: “VOL”,
-side: “yes”,
-edge: e1,
-prob: mid / 100,
-price: yb,
-label: “Vol “ + mid + “%”
-};
-} else if (mid >= 15 && mid <= 40) {
-var e2 = (50 - mid) / 100 * 0.15;
-if (e2 >= cfg.minEdge) return {
-signal: “VOL”,
-side: “no”,
-edge: e2,
-prob: (100 - mid) / 100,
-price: nb,
-label: “Vol “ + mid + “%”
-};
-}
-}
-// Fade extremes
-if (mid >= 92) {
-var e3 = (mid - 89) / 100;
-if (e3 >= cfg.minEdge) return {
-signal: “FADE”,
-side: “no”,
-edge: e3,
-prob: (100 - mid) / 100,
-price: nb,
-label: “Fade “ + mid + “%”
-};
-}
-if (mid <= 8) {
-var e4 = (11 - mid) / 100;
-if (e4 >= cfg.minEdge) return {
-signal: “FADE”,
-side: “yes”,
-edge: e4,
-prob: mid / 100,
-price: yb,
-label: “Fade “ + mid + “%”
-};
-}
-return null;
+  var days = daysUntil(m.close_time);
+  if (days <= 0 || days > (cfg.daysWindow || 14)) return null;
+  var yb = m.yes_bid,
+    nb = m.no_bid,
+    ya = m.yes_ask;
+  var sum = yb + nb;
+  var mid = Math.round((yb + ya) / 2);
+  // Arbitrage
+  if (sum > 0 && sum <= 93) {
+    return {
+      signal: "ARB",
+      side: "yes",
+      edge: (100 - sum) / 100,
+      prob: 1.0,
+      price: yb,
+      label: "Arb +" + (100 - sum) + "c"
+    };
+  }
+  // Volume momentum
+  var spread = ya - yb;
+  if (m.volume >= 5000 && spread <= 6 && spread >= 0) {
+    if (mid >= 60 && mid <= 85) {
+      var e1 = (mid - 50) / 100 * 0.15;
+      if (e1 >= cfg.minEdge) return {
+        signal: "VOL",
+        side: "yes",
+        edge: e1,
+        prob: mid / 100,
+        price: yb,
+        label: "Vol " + mid + "%"
+      };
+    } else if (mid >= 15 && mid <= 40) {
+      var e2 = (50 - mid) / 100 * 0.15;
+      if (e2 >= cfg.minEdge) return {
+        signal: "VOL",
+        side: "no",
+        edge: e2,
+        prob: (100 - mid) / 100,
+        price: nb,
+        label: "Vol " + mid + "%"
+      };
+    }
+  }
+  // Fade extremes
+  if (mid >= 92) {
+    var e3 = (mid - 89) / 100;
+    if (e3 >= cfg.minEdge) return {
+      signal: "FADE",
+      side: "no",
+      edge: e3,
+      prob: (100 - mid) / 100,
+      price: nb,
+      label: "Fade " + mid + "%"
+    };
+  }
+  if (mid <= 8) {
+    var e4 = (11 - mid) / 100;
+    if (e4 >= cfg.minEdge) return {
+      signal: "FADE",
+      side: "yes",
+      edge: e4,
+      prob: mid / 100,
+      price: yb,
+      label: "Fade " + mid + "%"
+    };
+  }
+  return null;
 }
 function kellySize(prob, priceCents, fraction, maxCents, days) {
-if (!priceCents || priceCents <= 0 || priceCents >= 100 || !maxCents) return 0;
-var cost = priceCents / 100;
-var b = (1 - cost) / cost;
-var p = Math.min(0.97, Math.max(0.03, prob || 0.5));
-var f = Math.max(0, (b * p - (1 - p)) / b);
-var urg = days < 0.5 ? 1.5 : days < 1 ? 1.25 : days < 2 ? 1.1 : 1.0;
-var r = Math.min(Math.round(f * fraction * maxCents * urg), maxCents);
-return isNaN(r) ? 0 : r;
+  if (!priceCents || priceCents <= 0 || priceCents >= 100 || !maxCents) return 0;
+  var cost = priceCents / 100;
+  var b = (1 - cost) / cost;
+  var p = Math.min(0.97, Math.max(0.03, prob || 0.5));
+  var f = Math.max(0, (b * p - (1 - p)) / b);
+  var urg = days < 0.5 ? 1.5 : days < 1 ? 1.25 : days < 2 ? 1.1 : 1.0;
+  var r = Math.min(Math.round(f * fraction * maxCents * urg), maxCents);
+  return isNaN(r) ? 0 : r;
 }
 
 // === Simulation ===
 var SIM = {
-edgeRealize: {
-ARB: 1.0,
-VOL: 0.55,
-FADE: 0.25
-},
-fillRate: {
-ARB: 0.95,
-VOL: 0.78,
-FADE: 0.70
-},
-feeRate: 0.07
+  edgeRealize: {
+    ARB: 1.0,
+    VOL: 0.55,
+    FADE: 0.25
+  },
+  fillRate: {
+    ARB: 0.95,
+    VOL: 0.78,
+    FADE: 0.70
+  },
+  feeRate: 0.07
 };
 function simulateTrade(sig) {
-if (Math.random() > (SIM.fillRate[sig.signal] || 0.7)) return {
-filled: false
-};
-var realEdge = sig.edge * (SIM.edgeRealize[sig.signal] || 0.5);
-var noise = (Math.random() - 0.5) * 0.06;
-var trueProb = Math.min(0.97, Math.max(0.03, (sig.prob || 0.5) + realEdge + noise));
-var won = Math.random() < trueProb;
-var cost = sig.price / 100;
-var payout = won ? 1 - cost : 0;
-var fee = won ? payout * SIM.feeRate : 0;
-return {
-filled: true,
-won: won,
-trueProb: trueProb,
-fee: fee
-};
+  if (Math.random() > (SIM.fillRate[sig.signal] || 0.7)) return {
+    filled: false
+  };
+  var realEdge = sig.edge * (SIM.edgeRealize[sig.signal] || 0.5);
+  var noise = (Math.random() - 0.5) * 0.06;
+  var trueProb = Math.min(0.97, Math.max(0.03, (sig.prob || 0.5) + realEdge + noise));
+  var won = Math.random() < trueProb;
+  var cost = sig.price / 100;
+  var payout = won ? 1 - cost : 0;
+  var fee = won ? payout * SIM.feeRate : 0;
+  return {
+    filled: true,
+    won: won,
+    trueProb: trueProb,
+    fee: fee
+  };
 }
 
 // === Persistence ===
 function lsGet(k) {
-try {
-return localStorage.getItem(k);
-} catch (e) {
-return null;
-}
+  try {
+    return localStorage.getItem(k);
+  } catch (e) {
+    return null;
+  }
 }
 function lsSet(k, v) {
-try {
-localStorage.setItem(k, v);
-} catch (e) {/* */}
+  try {
+    localStorage.setItem(k, v);
+  } catch (e) {/* */}
 }
 function initMetrics() {
-return {
-evaluated: 0,
-signals: 0,
-attempted: 0,
-filled: 0,
-wins: 0,
-losses: 0,
-placed: 0,
-earned: 0,
-byType: {}
-};
+  return {
+    evaluated: 0,
+    signals: 0,
+    attempted: 0,
+    filled: 0,
+    wins: 0,
+    losses: 0,
+    placed: 0,
+    earned: 0,
+    byType: {}
+  };
 }
 
 // === Mock markets for demo ===
 function mockMarkets() {
-var n = Date.now();
-var d = function (days) {
-return new Date(n + days * 864e5).toISOString();
-};
-return [{
-ticker: “FED-RATE-MAY”,
-title: “Fed holds rates in May?”,
-yes_bid: 68,
-yes_ask: 72,
-no_bid: 26,
-no_ask: 30,
-last_price: 70,
-close_time: d(2),
-volume: 95000
-}, {
-ticker: “BTC-70K”,
-title: “BTC above $70k by Friday?”,
-yes_bid: 22,
-yes_ask: 26,
-no_bid: 72,
-no_ask: 76,
-last_price: 24,
-close_time: d(3),
-volume: 210000
-}, {
-ticker: “CPI-BELOW-3”,
-title: “CPI below 3%?”,
-yes_bid: 61,
-yes_ask: 65,
-no_bid: 33,
-no_ask: 37,
-last_price: 63,
-close_time: d(4),
-volume: 67000
-}, {
-ticker: “SPY-530”,
-title: “SPY above $530 Friday?”,
-yes_bid: 53,
-yes_ask: 57,
-no_bid: 41,
-no_ask: 45,
-last_price: 55,
-close_time: d(1.5),
-volume: 120000
-}, {
-ticker: “SENATE-BILL”,
-title: “Senate passes budget bill?”,
-yes_bid: 38,
-yes_ask: 43,
-no_bid: 55,
-no_ask: 60,
-last_price: 40,
-close_time: d(5),
-volume: 42000
-}, {
-ticker: “ETH-4K”,
-title: “ETH above $4k this month?”,
-yes_bid: 29,
-yes_ask: 34,
-no_bid: 64,
-no_ask: 69,
-last_price: 31,
-close_time: d(8),
-volume: 88000
-}, {
-ticker: “TSLA-BEAT”,
-title: “TSLA beats earnings?”,
-yes_bid: 55,
-yes_ask: 59,
-no_bid: 39,
-no_ask: 43,
-last_price: 57,
-close_time: d(6),
-volume: 180000
-}, {
-ticker: “GOLD-2400”,
-title: “Gold above $2,400 Friday?”,
-yes_bid: 74,
-yes_ask: 79,
-no_bid: 19,
-no_ask: 24,
-last_price: 77,
-close_time: d(1.8),
-volume: 34000
-}, {
-ticker: “TRUMP-EXEC”,
-title: “Executive order this week?”,
-yes_bid: 93,
-yes_ask: 96,
-no_bid: 2,
-no_ask: 5,
-last_price: 94,
-close_time: d(2.5),
-volume: 55000
-}, {
-ticker: “SOL-200”,
-title: “SOL above $200 by Friday?”,
-yes_bid: 35,
-yes_ask: 40,
-no_bid: 58,
-no_ask: 63,
-last_price: 37,
-close_time: d(5.5),
-volume: 72000
-}];
+  var n = Date.now();
+  var d = function (days) {
+    return new Date(n + days * 864e5).toISOString();
+  };
+  return [{
+    ticker: "FED-RATE-MAY",
+    title: "Fed holds rates in May?",
+    yes_bid: 68,
+    yes_ask: 72,
+    no_bid: 26,
+    no_ask: 30,
+    last_price: 70,
+    close_time: d(2),
+    volume: 95000
+  }, {
+    ticker: "BTC-70K",
+    title: "BTC above $70k by Friday?",
+    yes_bid: 22,
+    yes_ask: 26,
+    no_bid: 72,
+    no_ask: 76,
+    last_price: 24,
+    close_time: d(3),
+    volume: 210000
+  }, {
+    ticker: "CPI-BELOW-3",
+    title: "CPI below 3%?",
+    yes_bid: 61,
+    yes_ask: 65,
+    no_bid: 33,
+    no_ask: 37,
+    last_price: 63,
+    close_time: d(4),
+    volume: 67000
+  }, {
+    ticker: "SPY-530",
+    title: "SPY above $530 Friday?",
+    yes_bid: 53,
+    yes_ask: 57,
+    no_bid: 41,
+    no_ask: 45,
+    last_price: 55,
+    close_time: d(1.5),
+    volume: 120000
+  }, {
+    ticker: "SENATE-BILL",
+    title: "Senate passes budget bill?",
+    yes_bid: 38,
+    yes_ask: 43,
+    no_bid: 55,
+    no_ask: 60,
+    last_price: 40,
+    close_time: d(5),
+    volume: 42000
+  }, {
+    ticker: "ETH-4K",
+    title: "ETH above $4k this month?",
+    yes_bid: 29,
+    yes_ask: 34,
+    no_bid: 64,
+    no_ask: 69,
+    last_price: 31,
+    close_time: d(8),
+    volume: 88000
+  }, {
+    ticker: "TSLA-BEAT",
+    title: "TSLA beats earnings?",
+    yes_bid: 55,
+    yes_ask: 59,
+    no_bid: 39,
+    no_ask: 43,
+    last_price: 57,
+    close_time: d(6),
+    volume: 180000
+  }, {
+    ticker: "GOLD-2400",
+    title: "Gold above $2,400 Friday?",
+    yes_bid: 74,
+    yes_ask: 79,
+    no_bid: 19,
+    no_ask: 24,
+    last_price: 77,
+    close_time: d(1.8),
+    volume: 34000
+  }, {
+    ticker: "TRUMP-EXEC",
+    title: "Executive order this week?",
+    yes_bid: 93,
+    yes_ask: 96,
+    no_bid: 2,
+    no_ask: 5,
+    last_price: 94,
+    close_time: d(2.5),
+    volume: 55000
+  }, {
+    ticker: "SOL-200",
+    title: "SOL above $200 by Friday?",
+    yes_bid: 35,
+    yes_ask: 40,
+    no_bid: 58,
+    no_ask: 63,
+    last_price: 37,
+    close_time: d(5.5),
+    volume: 72000
+  }];
 }
 
 // === Worker code for CORS proxy ===
-var WORKER_CODE = ‘const K=“https://api.elections.kalshi.com/trade-api/v2”;\nconst C={“Access-Control-Allow-Origin”:”*”,“Access-Control-Allow-Methods”:“GET,POST,PUT,DELETE,OPTIONS”,“Access-Control-Allow-Headers”:“Content-Type,KALSHI-ACCESS-KEY,KALSHI-ACCESS-SIGNATURE,KALSHI-ACCESS-TIMESTAMP”};\nexport default{async fetch(r){if(r.method===“OPTIONS”)return new Response(null,{headers:C});const u=new URL(r.url);const t=K+u.pathname+u.search;const h={};for(const[k,v]of r.headers){if(!k.startsWith(“cf-”)&&k!==“host”)h[k]=v;}const o={method:r.method,headers:h};if(r.body)o.body=r.body;const s=await fetch(t,o);const b=await s.arrayBuffer();const rh=new Headers(s.headers);for(const[k,v]of Object.entries(C))rh.set(k,v);return new Response(b,{status:s.status,headers:rh});}};’;
+var WORKER_CODE = 'const K="https://api.elections.kalshi.com/trade-api/v2";\nconst C={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,POST,PUT,DELETE,OPTIONS","Access-Control-Allow-Headers":"Content-Type,KALSHI-ACCESS-KEY,KALSHI-ACCESS-SIGNATURE,KALSHI-ACCESS-TIMESTAMP"};\nexport default{async fetch(r){if(r.method==="OPTIONS")return new Response(null,{headers:C});const u=new URL(r.url);const t=K+u.pathname+u.search;const h={};for(const[k,v]of r.headers){if(!k.startsWith("cf-")&&k!=="host")h[k]=v;}const o={method:r.method,headers:h};if(r.body)o.body=r.body;const s=await fetch(t,o);const b=await s.arrayBuffer();const rh=new Headers(s.headers);for(const[k,v]of Object.entries(C))rh.set(k,v);return new Response(b,{status:s.status,headers:rh});}};';
 
 // =====================================================================
 // MAIN COMPONENT
 // =====================================================================
 function KalshiTrader() {
-var [screen, setScreen] = useState(“login”);
-var [keyId, setKeyId] = useState(lsGet(“kt_key”) || “”);
-var [pemText, setPemText] = useState(lsGet(“kt_pem”) || “”);
-var [proxyUrl, setProxyUrl] = useState(lsGet(“kt_proxy”) || “”);
-var [err, setErr] = useState(””);
-var [loading, setLoading] = useState(false);
-var [demo, setDemo] = useState(false);
-var [paper, setPaper] = useState(false);
-var [balance, setBalance] = useState(0);
-var [markets, setMarkets] = useState([]);
-var [logs, setLogs] = useState([]);
-var [autoOn, setAutoOn] = useState(lsGet(“kt_auto”) === “true”);
-var [eStopped, setEStopped] = useState(lsGet(“kt_estop”) === “true”);
-var [metrics, setMetrics] = useState(function () {
-try {
-var v = lsGet(“kt_metrics”);
-return v ? JSON.parse(v) : initMetrics();
-} catch (e) {
-return initMetrics();
-}
-});
-var [tab, setTab] = useState(“markets”);
-var [fetching, setFetching] = useState(false);
-var [filter, setFilter] = useState(“all”);
-var cfg = {
-daysWindow: 14,
-minEdge: 0.03,
-kellyFrac: 0.25,
-maxBetCents: 500
-};
-var tradedRef = useRef({});
-var timerRef = useRef(null);
-var addLog = useCallback(function (msg, type) {
-setLogs(function (p) {
-return [{
-t: Date.now(),
-msg: msg,
-type: type || “info”
-}].concat(p).slice(0, 200);
-});
-}, []);
-var saveM = function (m) {
-lsSet(“kt_metrics”, JSON.stringify(m));
-};
+  var [screen, setScreen] = useState("login");
+  var [keyId, setKeyId] = useState(lsGet("kt_key") || "");
+  var [pemText, setPemText] = useState(lsGet("kt_pem") || "");
+  var [proxyUrl, setProxyUrl] = useState(lsGet("kt_proxy") || "");
+  var [err, setErr] = useState("");
+  var [loading, setLoading] = useState(false);
+  var [demo, setDemo] = useState(false);
+  var [paper, setPaper] = useState(false);
+  var [balance, setBalance] = useState(0);
+  var [markets, setMarkets] = useState([]);
+  var [logs, setLogs] = useState([]);
+  var [autoOn, setAutoOn] = useState(lsGet("kt_auto") === "true");
+  var [eStopped, setEStopped] = useState(lsGet("kt_estop") === "true");
+  var [metrics, setMetrics] = useState(function () {
+    try {
+      var v = lsGet("kt_metrics");
+      return v ? JSON.parse(v) : initMetrics();
+    } catch (e) {
+      return initMetrics();
+    }
+  });
+  var [tab, setTab] = useState("markets");
+  var [fetching, setFetching] = useState(false);
+  var [filter, setFilter] = useState("all");
+  var cfg = {
+    daysWindow: 14,
+    minEdge: 0.03,
+    kellyFrac: 0.25,
+    maxBetCents: 500
+  };
+  var tradedRef = useRef({});
+  var timerRef = useRef(null);
+  var addLog = useCallback(function (msg, type) {
+    setLogs(function (p) {
+      return [{
+        t: Date.now(),
+        msg: msg,
+        type: type || "info"
+      }].concat(p).slice(0, 200);
+    });
+  }, []);
+  var saveM = function (m) {
+    lsSet("kt_metrics", JSON.stringify(m));
+  };
 
-// – Login –
-var handleLogin = async function () {
-setLoading(true);
-setErr(””);
-try {
-await setCredentials(keyId, pemText);
-} catch (e) {
-setErr(“Bad private key. Paste full PEM including BEGIN/END lines.”);
-setLoading(false);
-return;
-}
-if (proxyUrl) setProxy(proxyUrl);
-try {
-var bal = await kalshiReq(”/portfolio/balance”);
-setBalance(bal.balance || d2c(bal.balance_dollars) || 0);
-lsSet(“kt_key”, keyId);
-lsSet(“kt_pem”, pemText);
-lsSet(“kt_proxy”, proxyUrl);
-setScreen(“modeselect”);
-} catch (e) {
-var em = e.message || “”;
-if (em === “CORS_BLOCKED” || em.indexOf(“Load failed”) >= 0 || em.indexOf(“Failed to fetch”) >= 0) {
-if (!proxyUrl) {
-setScreen(“corserror”);
-} else {
-setErr(“Proxy reachable but Kalshi blocked. Redeploy Worker with latest code.”);
-}
-} else if (em.indexOf(“401”) >= 0 || em.indexOf(“403”) >= 0) {
-setErr(“Credentials rejected. Check Key ID matches private key.”);
-} else {
-setErr(em);
-}
-}
-setLoading(false);
-};
-var handlePaper = function () {
-setPaper(true);
-setDemo(false);
-setScreen(“dash”);
-addLog(“Paper trading – real markets, simulated orders”);
-};
-var handleLive = function () {
-setPaper(false);
-setDemo(false);
-setScreen(“dash”);
-addLog(“LIVE trading active”, “warn”);
-};
-var handleDemo = function () {
-setDemo(true);
-setPaper(false);
-setBalance(10000);
-var mocks = mockMarkets();
-for (var i = 0; i < mocks.length; i++) {
-mocks[i].signal = analyzeMarket(mocks[i], cfg);
-}
-setMarkets(mocks);
-setScreen(“dash”);
-addLog(“Demo mode – offline mock markets”);
-};
+  // -- Login --
+  var handleLogin = async function () {
+    setLoading(true);
+    setErr("");
+    try {
+      await setCredentials(keyId, pemText);
+    } catch (e) {
+      setErr("Bad private key. Paste full PEM including BEGIN/END lines.");
+      setLoading(false);
+      return;
+    }
+    if (proxyUrl) setProxy(proxyUrl);
+    try {
+      var bal = await kalshiReq("/portfolio/balance");
+      setBalance(bal.balance || d2c(bal.balance_dollars) || 0);
+      lsSet("kt_key", keyId);
+      lsSet("kt_pem", pemText);
+      lsSet("kt_proxy", proxyUrl);
+      setScreen("modeselect");
+    } catch (e) {
+      var em = e.message || "";
+      if (em === "CORS_BLOCKED" || em.indexOf("Load failed") >= 0 || em.indexOf("Failed to fetch") >= 0) {
+        if (!proxyUrl) {
+          setScreen("corserror");
+        } else {
+          setErr("Proxy reachable but Kalshi blocked. Redeploy Worker with latest code.");
+        }
+      } else if (em.indexOf("401") >= 0 || em.indexOf("403") >= 0) {
+        setErr("Credentials rejected. Check Key ID matches private key.");
+      } else {
+        setErr(em);
+      }
+    }
+    setLoading(false);
+  };
+  var handlePaper = function () {
+    setPaper(true);
+    setDemo(false);
+    setScreen("dash");
+    addLog("Paper trading -- real markets, simulated orders");
+  };
+  var handleLive = function () {
+    setPaper(false);
+    setDemo(false);
+    setScreen("dash");
+    addLog("LIVE trading active", "warn");
+  };
+  var handleDemo = function () {
+    setDemo(true);
+    setPaper(false);
+    setBalance(10000);
+    var mocks = mockMarkets();
+    for (var i = 0; i < mocks.length; i++) {
+      mocks[i].signal = analyzeMarket(mocks[i], cfg);
+    }
+    setMarkets(mocks);
+    setScreen("dash");
+    addLog("Demo mode -- offline mock markets");
+  };
 
-// – Fetch –
-var doFetch = useCallback(async function () {
-if (demo) return;
-setFetching(true);
-try {
-addLog(“Fetching markets from Kalshi…”);
-var all = await fetchMarkets();
-addLog(“API returned “ + all.length + “ raw markets”);
-// Filter by time window, attach signals
-var shown = [];
-for (var i = 0; i < all.length; i++) {
-var m = all[i];
-var days = daysUntil(m.close_time);
-if (days <= 0 || days > cfg.daysWindow) continue;
-m.signal = analyzeMarket(m, cfg);
-shown.push(m);
-}
-shown.sort(function (a, b) {
-return new Date(a.close_time) - new Date(b.close_time);
-});
-setMarkets(shown);
-var sigCount = shown.filter(function (m) {
-return m.signal;
-}).length;
-addLog(“Showing “ + shown.length + “ markets within “ + cfg.daysWindow + “d, “ + sigCount + “ signals”);
-setMetrics(function (p) {
-var n = Object.assign({}, p);
-n.evaluated += all.length;
-n.signals += sigCount;
-saveM(n);
-return n;
-});
-} catch (e) {
-addLog(“Fetch error: “ + e.message, “error”);
-}
-setFetching(false);
-}, [demo, addLog]);
-useEffect(function () {
-if (!demo && screen === “dash”) doFetch();
-}, [screen]); // eslint-disable-line
+  // -- Fetch --
+  var doFetch = useCallback(async function () {
+    if (demo) return;
+    setFetching(true);
+    try {
+      addLog("Fetching markets from Kalshi...");
+      var all = await fetchMarkets();
+      addLog("API returned " + all.length + " raw markets");
+      // Filter by time window, attach signals
+      var shown = [];
+      for (var i = 0; i < all.length; i++) {
+        var m = all[i];
+        var days = daysUntil(m.close_time);
+        if (days <= 0 || days > cfg.daysWindow) continue;
+        m.signal = analyzeMarket(m, cfg);
+        shown.push(m);
+      }
+      shown.sort(function (a, b) {
+        return new Date(a.close_time) - new Date(b.close_time);
+      });
+      setMarkets(shown);
+      var sigCount = shown.filter(function (m) {
+        return m.signal;
+      }).length;
+      addLog("Showing " + shown.length + " markets within " + cfg.daysWindow + "d, " + sigCount + " signals");
+      setMetrics(function (p) {
+        var n = Object.assign({}, p);
+        n.evaluated += all.length;
+        n.signals += sigCount;
+        saveM(n);
+        return n;
+      });
+    } catch (e) {
+      addLog("Fetch error: " + e.message, "error");
+    }
+    setFetching(false);
+  }, [demo, addLog]);
+  useEffect(function () {
+    if (!demo && screen === "dash") doFetch();
+  }, [screen]); // eslint-disable-line
 
-// – Trade –
-var executeTrade = useCallback(function (m) {
-if (!m.signal || eStopped) return;
-if (tradedRef.current[m.ticker]) {
-addLog(“Already traded “ + m.ticker, “warn”);
-return;
-}
-var sig = m.signal;
-var days = daysUntil(m.close_time);
-var size = kellySize(sig.prob, sig.price, cfg.kellyFrac, cfg.maxBetCents, days);
-if (size <= 0) return;
-var contracts = Math.max(1, Math.floor(size / sig.price));
-if (demo || paper) {
-var result = simulateTrade(sig);
-tradedRef.current[m.ticker] = true;
-setMetrics(function (p) {
-var n = Object.assign({}, p);
-n.attempted++;
-if (!n.byType[sig.signal]) n.byType[sig.signal] = {
-a: 0,
-f: 0,
-w: 0,
-l: 0,
-p: 0,
-e: 0
-};
-var bt = n.byType[sig.signal];
-bt.a++;
-if (result.filled) {
-n.filled++;
-bt.f++;
-var costC = contracts * sig.price;
-n.placed += costC;
-bt.p += costC;
-if (result.won) {
-var winC = Math.round(contracts * (100 - sig.price) * (1 - SIM.feeRate));
-n.wins++;
-bt.w++;
-n.earned += winC;
-bt.e += winC;
-setBalance(function (b) {
-return b + winC;
-});
-addLog(”[” + sig.signal + “] WIN “ + m.ticker + “ +” + (winC / 100).toFixed(2), “success”);
-} else {
-n.losses++;
-bt.l++;
-n.earned -= costC;
-bt.e -= costC;
-setBalance(function (b) {
-return b - costC;
-});
-addLog(”[” + sig.signal + “] LOSS “ + m.ticker + “ -” + (costC / 100).toFixed(2), “error”);
-}
-} else {
-addLog(”[” + sig.signal + “] “ + m.ticker + “ – limit missed”, “warn”);
-}
-saveM(n);
-return n;
-});
-} else {
-// LIVE order
-kalshiReq(”/orders”, “POST”, {
-ticker: m.ticker,
-action: “buy”,
-side: sig.side,
-count_fp: String(contracts) + “.00”,
-type: “limit”,
-yes_price_dollars: (sig.side === “yes” ? sig.price / 100 : (100 - sig.price) / 100).toFixed(2),
-time_in_force: “ioc”
-}).then(function () {
-tradedRef.current[m.ticker] = true;
-addLog(”[LIVE “ + sig.signal + “] “ + contracts + “x “ + sig.side + “ @ “ + sig.price + “c “ + m.ticker, “success”);
-}).catch(function (e) {
-addLog(”[LIVE] Order failed: “ + e.message, “error”);
-});
-}
-}, [demo, paper, eStopped, addLog]);
+  // -- Trade --
+  var executeTrade = useCallback(function (m) {
+    if (!m.signal || eStopped) return;
+    if (tradedRef.current[m.ticker]) {
+      addLog("Already traded " + m.ticker, "warn");
+      return;
+    }
+    var sig = m.signal;
+    var days = daysUntil(m.close_time);
+    var size = kellySize(sig.prob, sig.price, cfg.kellyFrac, cfg.maxBetCents, days);
+    if (size <= 0) return;
+    var contracts = Math.max(1, Math.floor(size / sig.price));
+    if (demo || paper) {
+      var result = simulateTrade(sig);
+      tradedRef.current[m.ticker] = true;
+      setMetrics(function (p) {
+        var n = Object.assign({}, p);
+        n.attempted++;
+        if (!n.byType[sig.signal]) n.byType[sig.signal] = {
+          a: 0,
+          f: 0,
+          w: 0,
+          l: 0,
+          p: 0,
+          e: 0
+        };
+        var bt = n.byType[sig.signal];
+        bt.a++;
+        if (result.filled) {
+          n.filled++;
+          bt.f++;
+          var costC = contracts * sig.price;
+          n.placed += costC;
+          bt.p += costC;
+          if (result.won) {
+            var winC = Math.round(contracts * (100 - sig.price) * (1 - SIM.feeRate));
+            n.wins++;
+            bt.w++;
+            n.earned += winC;
+            bt.e += winC;
+            setBalance(function (b) {
+              return b + winC;
+            });
+            addLog("[" + sig.signal + "] WIN " + m.ticker + " +" + (winC / 100).toFixed(2), "success");
+          } else {
+            n.losses++;
+            bt.l++;
+            n.earned -= costC;
+            bt.e -= costC;
+            setBalance(function (b) {
+              return b - costC;
+            });
+            addLog("[" + sig.signal + "] LOSS " + m.ticker + " -" + (costC / 100).toFixed(2), "error");
+          }
+        } else {
+          addLog("[" + sig.signal + "] " + m.ticker + " -- limit missed", "warn");
+        }
+        saveM(n);
+        return n;
+      });
+    } else {
+      // LIVE order
+      kalshiReq("/orders", "POST", {
+        ticker: m.ticker,
+        action: "buy",
+        side: sig.side,
+        count_fp: String(contracts) + ".00",
+        type: "limit",
+        yes_price_dollars: (sig.side === "yes" ? sig.price / 100 : (100 - sig.price) / 100).toFixed(2),
+        time_in_force: "ioc"
+      }).then(function () {
+        tradedRef.current[m.ticker] = true;
+        addLog("[LIVE " + sig.signal + "] " + contracts + "x " + sig.side + " @ " + sig.price + "c " + m.ticker, "success");
+      }).catch(function (e) {
+        addLog("[LIVE] Order failed: " + e.message, "error");
+      });
+    }
+  }, [demo, paper, eStopped, addLog]);
 
-// – Auto-trade –
-useEffect(function () {
-if (timerRef.current) {
-clearInterval(timerRef.current);
-timerRef.current = null;
-}
-if (!autoOn || eStopped || screen !== “dash”) return;
-var run = async function () {
-await doFetch();
-var sigs = markets.filter(function (m) {
-return m.signal && !tradedRef.current[m.ticker];
-});
-for (var i = 0; i < Math.min(sigs.length, 3); i++) executeTrade(sigs[i]);
-};
-run();
-timerRef.current = setInterval(run, 120000);
-return function () {
-if (timerRef.current) clearInterval(timerRef.current);
-};
-}, [autoOn, eStopped, screen]); // eslint-disable-line
+  // -- Auto-trade --
+  useEffect(function () {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (!autoOn || eStopped || screen !== "dash") return;
+    var run = async function () {
+      await doFetch();
+      var sigs = markets.filter(function (m) {
+        return m.signal && !tradedRef.current[m.ticker];
+      });
+      for (var i = 0; i < Math.min(sigs.length, 3); i++) executeTrade(sigs[i]);
+    };
+    run();
+    timerRef.current = setInterval(run, 120000);
+    return function () {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [autoOn, eStopped, screen]); // eslint-disable-line
 
-var toggleEStop = function () {
-var next = !eStopped;
-setEStopped(next);
-lsSet(“kt_estop”, String(next));
-if (next) {
-setAutoOn(false);
-lsSet(“kt_auto”, “false”);
-addLog(“EMERGENCY STOP”, “error”);
-} else addLog(“E-stop released”, “info”);
-};
+  var toggleEStop = function () {
+    var next = !eStopped;
+    setEStopped(next);
+    lsSet("kt_estop", String(next));
+    if (next) {
+      setAutoOn(false);
+      lsSet("kt_auto", "false");
+      addLog("EMERGENCY STOP", "error");
+    } else addLog("E-stop released", "info");
+  };
 
-// =====================================================================
-// RENDER
-// =====================================================================
-var mode = demo ? “DEMO” : paper ? “PAPER” : “LIVE”;
-var modeCol = demo ? “#f0a030” : paper ? “#00ff88” : “#ff3b30”;
+  // =====================================================================
+  // RENDER
+  // =====================================================================
+  var mode = demo ? "DEMO" : paper ? "PAPER" : "LIVE";
+  var modeCol = demo ? "#f0a030" : paper ? "#00ff88" : "#ff3b30";
 
-// – LOGIN –
-if (screen === “login”) return React.createElement(“div”, {
-style: S.page
-}, React.createElement(“div”, {
-style: S.card
-}, React.createElement(“div”, {
-style: {
-fontSize: 22,
-fontWeight: 900,
-color: “#00ff88”,
-marginBottom: 4
-}
-}, “KAUTO”), React.createElement(“div”, {
-style: {
-fontSize: 12,
-color: “#666”,
-marginBottom: 16
-}
-}, “Kalshi Auto-Trader”), React.createElement(“input”, {
-style: S.inp,
-placeholder: “API Key ID”,
-value: keyId,
-onChange: function (e) {
-setKeyId(e.target.value);
-}
-}), React.createElement(“textarea”, {
-style: Object.assign({}, S.inp, {
-height: 90,
-fontFamily: “monospace”,
-fontSize: 10
-}),
-placeholder: “RSA Private Key (PEM)”,
-value: pemText,
-onChange: function (e) {
-setPemText(e.target.value);
-}
-}), React.createElement(“input”, {
-style: S.inp,
-placeholder: “CORS Proxy URL (https://xxx.workers.dev)”,
-value: proxyUrl,
-onChange: function (e) {
-setProxyUrl(e.target.value);
-}
-}), err && React.createElement(“div”, {
-style: {
-color: “#ff6b6b”,
-fontSize: 12
-}
-}, err), React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-background: “#00ff8822”,
-color: “#00ff88”,
-border: “1px solid #00ff8844”
-}),
-onClick: handleLogin,
-disabled: loading || !keyId || !pemText
-}, loading ? “Connecting…” : “Connect”), React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-background: “#1a1a2e”,
-color: “#888”,
-marginTop: 8
-}),
-onClick: handleDemo
-}, “Demo (Offline)”)));
+  // -- LOGIN --
+  if (screen === "login") return React.createElement("div", {
+    style: S.page
+  }, React.createElement("div", {
+    style: S.card
+  }, React.createElement("div", {
+    style: {
+      fontSize: 22,
+      fontWeight: 900,
+      color: "#00ff88",
+      marginBottom: 4
+    }
+  }, "KAUTO"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#666",
+      marginBottom: 16
+    }
+  }, "Kalshi Auto-Trader"), React.createElement("input", {
+    style: S.inp,
+    placeholder: "API Key ID",
+    value: keyId,
+    onChange: function (e) {
+      setKeyId(e.target.value);
+    }
+  }), React.createElement("textarea", {
+    style: Object.assign({}, S.inp, {
+      height: 90,
+      fontFamily: "monospace",
+      fontSize: 10
+    }),
+    placeholder: "RSA Private Key (PEM)",
+    value: pemText,
+    onChange: function (e) {
+      setPemText(e.target.value);
+    }
+  }), React.createElement("input", {
+    style: S.inp,
+    placeholder: "CORS Proxy URL (https://xxx.workers.dev)",
+    value: proxyUrl,
+    onChange: function (e) {
+      setProxyUrl(e.target.value);
+    }
+  }), err && React.createElement("div", {
+    style: {
+      color: "#ff6b6b",
+      fontSize: 12
+    }
+  }, err), React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      background: "#00ff8822",
+      color: "#00ff88",
+      border: "1px solid #00ff8844"
+    }),
+    onClick: handleLogin,
+    disabled: loading || !keyId || !pemText
+  }, loading ? "Connecting..." : "Connect"), React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      background: "#1a1a2e",
+      color: "#888",
+      marginTop: 8
+    }),
+    onClick: handleDemo
+  }, "Demo (Offline)")));
 
-// – CORS ERROR –
-if (screen === “corserror”) return React.createElement(“div”, {
-style: S.page
-}, React.createElement(“div”, {
-style: S.card
-}, React.createElement(“div”, {
-style: {
-fontSize: 16,
-fontWeight: 800,
-color: “#ff6b6b”,
-marginBottom: 12
-}
-}, “CORS Proxy Needed”), React.createElement(“div”, {
-style: {
-fontSize: 12,
-color: “#999”,
-lineHeight: 1.6,
-marginBottom: 12
-}
-}, “Kalshi blocks browser requests. Deploy a Cloudflare Worker (free, 2 min):”, React.createElement(“br”, null), “1. Go to workers.cloudflare.com”, React.createElement(“br”, null), “2. Create worker, paste this code:”, React.createElement(“pre”, {
-style: {
-background: “#0a0f14”,
-padding: 8,
-fontSize: 8,
-overflow: “auto”,
-borderRadius: 6,
-marginTop: 8,
-whiteSpace: “pre-wrap”,
-wordBreak: “break-all”
-}
-}, WORKER_CODE), React.createElement(“br”, null), “3. Deploy, paste URL below”), React.createElement(“input”, {
-style: S.inp,
-placeholder: “https://your-worker.workers.dev”,
-value: proxyUrl,
-onChange: function (e) {
-setProxyUrl(e.target.value);
-}
-}), React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-background: “#00ff8822”,
-color: “#00ff88”
-}),
-onClick: function () {
-if (proxyUrl) setProxy(proxyUrl);
-setScreen(“login”);
-}
-}, “Back to Login”)));
+  // -- CORS ERROR --
+  if (screen === "corserror") return React.createElement("div", {
+    style: S.page
+  }, React.createElement("div", {
+    style: S.card
+  }, React.createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 800,
+      color: "#ff6b6b",
+      marginBottom: 12
+    }
+  }, "CORS Proxy Needed"), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#999",
+      lineHeight: 1.6,
+      marginBottom: 12
+    }
+  }, "Kalshi blocks browser requests. Deploy a Cloudflare Worker (free, 2 min):", React.createElement("br", null), "1. Go to workers.cloudflare.com", React.createElement("br", null), "2. Create worker, paste this code:", React.createElement("pre", {
+    style: {
+      background: "#0a0f14",
+      padding: 8,
+      fontSize: 8,
+      overflow: "auto",
+      borderRadius: 6,
+      marginTop: 8,
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-all"
+    }
+  }, WORKER_CODE), React.createElement("br", null), "3. Deploy, paste URL below"), React.createElement("input", {
+    style: S.inp,
+    placeholder: "https://your-worker.workers.dev",
+    value: proxyUrl,
+    onChange: function (e) {
+      setProxyUrl(e.target.value);
+    }
+  }), React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      background: "#00ff8822",
+      color: "#00ff88"
+    }),
+    onClick: function () {
+      if (proxyUrl) setProxy(proxyUrl);
+      setScreen("login");
+    }
+  }, "Back to Login")));
 
-// – MODE SELECT –
-if (screen === “modeselect”) return React.createElement(“div”, {
-style: S.page
-}, React.createElement(“div”, {
-style: S.card
-}, React.createElement(“div”, {
-style: {
-fontSize: 18,
-fontWeight: 900,
-color: “#00ff88”,
-marginBottom: 16
-}
-}, “Connected”), React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-background: “#0a1a0f”,
-border: “2px solid #00ff8844”,
-textAlign: “left”,
-padding: 16
-}),
-onClick: handlePaper
-}, React.createElement(“div”, {
-style: {
-fontWeight: 800,
-color: “#00ff88”
-}
-}, “Paper Trade”), React.createElement(“div”, {
-style: {
-fontSize: 11,
-color: “#888”,
-marginTop: 4
-}
-}, “Real markets, simulated orders”)), React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-background: “#1a0a0a”,
-border: “2px solid #ff3b3044”,
-textAlign: “left”,
-padding: 16,
-marginTop: 10
-}),
-onClick: handleLive
-}, React.createElement(“div”, {
-style: {
-fontWeight: 800,
-color: “#ff3b30”
-}
-}, “Go Live”), React.createElement(“div”, {
-style: {
-fontSize: 11,
-color: “#888”,
-marginTop: 4
-}
-}, “Real orders, real money”))));
+  // -- MODE SELECT --
+  if (screen === "modeselect") return React.createElement("div", {
+    style: S.page
+  }, React.createElement("div", {
+    style: S.card
+  }, React.createElement("div", {
+    style: {
+      fontSize: 18,
+      fontWeight: 900,
+      color: "#00ff88",
+      marginBottom: 16
+    }
+  }, "Connected"), React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      background: "#0a1a0f",
+      border: "2px solid #00ff8844",
+      textAlign: "left",
+      padding: 16
+    }),
+    onClick: handlePaper
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 800,
+      color: "#00ff88"
+    }
+  }, "Paper Trade"), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#888",
+      marginTop: 4
+    }
+  }, "Real markets, simulated orders")), React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      background: "#1a0a0a",
+      border: "2px solid #ff3b3044",
+      textAlign: "left",
+      padding: 16,
+      marginTop: 10
+    }),
+    onClick: handleLive
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 800,
+      color: "#ff3b30"
+    }
+  }, "Go Live"), React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: "#888",
+      marginTop: 4
+    }
+  }, "Real orders, real money"))));
 
-// – DASHBOARD –
-var shownMarkets = filter === “signals” ? markets.filter(function (m) {
-return m.signal;
-}) : markets;
-return React.createElement(“div”, {
-style: S.shell
-},
-// Header
-React.createElement(“div”, {
-style: S.hdr
-}, React.createElement(“div”, {
-style: {
-display: “flex”,
-alignItems: “center”,
-gap: 8
-}
-}, React.createElement(“span”, {
-style: {
-fontWeight: 900,
-fontSize: 16,
-color: “#00ff88”
-}
-}, “K”), React.createElement(“span”, {
-style: {
-fontWeight: 800,
-fontSize: 13,
-color: “#ddd”
-}
-}, “AUTO”), React.createElement(“span”, {
-style: {
-background: modeCol + “22”,
-color: modeCol,
-border: “1px solid “ + modeCol + “44”,
-padding: “2px 8px”,
-borderRadius: 6,
-fontSize: 10,
-fontWeight: 800
-}
-}, mode)), React.createElement(“div”, {
-style: {
-display: “flex”,
-alignItems: “center”,
-gap: 10
-}
-}, React.createElement(“span”, {
-style: {
-fontSize: 13,
-color: “#ccc”,
-fontFamily: “monospace”
-}
-}, “$” + (balance / 100).toFixed(2)), React.createElement(“button”, {
-style: {
-background: eStopped ? “#444” : “#ff3b30”,
-color: “#fff”,
-border: “none”,
-borderRadius: 8,
-padding: “4px 10px”,
-fontSize: 11,
-fontWeight: 800,
-cursor: “pointer”
-},
-onClick: toggleEStop
-}, eStopped ? “RESUME” : “STOP”))),
-// Tabs
-React.createElement(“div”, {
-style: {
-display: “flex”,
-borderBottom: “1px solid #1a2230”,
-background: “#0a0e14”
-}
-}, [“markets”, “log”, “metrics”].map(function (t) {
-return React.createElement(“button”, {
-key: t,
-style: {
-flex: 1,
-background: “none”,
-border: “none”,
-borderBottom: tab === t ? “2px solid #00ff88” : “2px solid transparent”,
-color: tab === t ? “#fff” : “#666”,
-padding: “10px 0”,
-fontSize: 13,
-fontWeight: 600,
-cursor: “pointer”
-},
-onClick: function () {
-setTab(t);
-}
-}, t.charAt(0).toUpperCase() + t.slice(1) + (t === “markets” ? “ (” + shownMarkets.length + “)” : “”));
-})),
-// Body
-React.createElement(“div”, {
-style: {
-flex: 1,
-padding: 12,
-overflowY: “auto”
-}
-},
-// == MARKETS ==
-tab === “markets” && React.createElement(“div”, null, React.createElement(“div”, {
-style: {
-display: “flex”,
-gap: 8,
-marginBottom: 10
-}
-}, React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-flex: 1,
-fontSize: 12,
-background: “#00ff8818”,
-color: “#00ff88”,
-border: “1px solid #00ff8833”
-}),
-onClick: doFetch,
-disabled: fetching || demo
-}, fetching ? “Loading…” : “Refresh”), React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-flex: 1,
-fontSize: 12,
-background: autoOn ? “#1a3320” : “#1a1a2e”,
-color: autoOn ? “#00ff88” : “#888”,
-border: “1px solid “ + (autoOn ? “#00ff8844” : “#333”)
-}),
-onClick: function () {
-var n = !autoOn;
-setAutoOn(n);
-lsSet(“kt_auto”, String(n));
-}
-}, “Auto: “ + (autoOn ? “ON” : “OFF”)), React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-width: 70,
-fontSize: 11,
-background: filter === “signals” ? “#1a2a1a” : “#1a1a2e”,
-color: filter === “signals” ? “#00ff88” : “#888”
-}),
-onClick: function () {
-setFilter(filter === “all” ? “signals” : “all”);
-}
-}, filter === “all” ? “All” : “Signals”)), shownMarkets.length === 0 && React.createElement(“div”, {
-style: {
-color: “#555”,
-textAlign: “center”,
-padding: 40
-}
-}, fetching ? “Loading…” : “No markets. Hit Refresh.”), shownMarkets.slice(0, 100).map(function (m) {
-var sig = m.signal;
-var days = daysUntil(m.close_time);
-var dLabel = days < 1 ? Math.round(days * 24) + “h” : days.toFixed(1) + “d”;
-var sigCol = sig ? sig.signal === “ARB” ? “#00ff88” : sig.signal === “VOL” ? “#4488ff” : “#ff8844” : “#1a2230”;
-return React.createElement(“div”, {
-key: m.ticker,
-style: {
-background: “#0a0f14”,
-border: “1px solid #1a2230”,
-borderLeft: “3px solid “ + sigCol,
-borderRadius: 10,
-padding: 12,
-marginBottom: 8
-}
-}, React.createElement(“div”, {
-style: {
-display: “flex”,
-justifyContent: “space-between”,
-marginBottom: 4
-}
-}, React.createElement(“div”, {
-style: {
-fontSize: 13,
-fontWeight: 600,
-color: “#e0e0e0”,
-flex: 1,
-lineHeight: 1.3
-}
-}, m.title), React.createElement(“span”, {
-style: {
-fontSize: 11,
-color: “#555”,
-whiteSpace: “nowrap”,
-marginLeft: 8
-}
-}, dLabel)), React.createElement(“div”, {
-style: {
-display: “flex”,
-gap: 10,
-fontSize: 11,
-color: “#777”
-}
-}, React.createElement(“span”, null, “Y:” + m.yes_bid), React.createElement(“span”, null, “N:” + m.no_bid), React.createElement(“span”, null, “Last:” + m.last_price), m.volume > 0 && React.createElement(“span”, null, “Vol:” + (m.volume >= 1000 ? (m.volume / 1000).toFixed(0) + “k” : m.volume)), React.createElement(“span”, {
-style: {
-color: “#444”
-}
-}, m.ticker)), sig && React.createElement(“div”, {
-style: {
-display: “flex”,
-justifyContent: “space-between”,
-alignItems: “center”,
-marginTop: 6
-}
-}, React.createElement(“div”, null, React.createElement(“span”, {
-style: {
-background: sigCol + “22”,
-color: sigCol,
-border: “1px solid “ + sigCol + “44”,
-padding: “2px 6px”,
-borderRadius: 4,
-fontSize: 10,
-fontWeight: 800,
-marginRight: 6
-}
-}, sig.signal), React.createElement(“span”, {
-style: {
-fontSize: 11,
-color: “#bbb”
-}
-}, sig.label)), React.createElement(“button”, {
-style: {
-background: “#00ff8818”,
-color: “#00ff88”,
-border: “1px solid #00ff8833”,
-borderRadius: 6,
-padding: “3px 10px”,
-fontSize: 11,
-fontWeight: 700,
-cursor: “pointer”
-},
-onClick: function () {
-executeTrade(m);
-}
-}, “Trade”)));
-})),
-// == LOG ==
-tab === “log” && React.createElement(“div”, null, logs.length === 0 && React.createElement(“div”, {
-style: {
-color: “#555”,
-textAlign: “center”,
-padding: 40
-}
-}, “No logs yet”), logs.map(function (l, i) {
-var c = l.type === “error” ? “#ff6b6b” : l.type === “success” ? “#00ff88” : l.type === “warn” ? “#f0a030” : “#888”;
-return React.createElement(“div”, {
-key: i,
-style: {
-fontSize: 11,
-color: c,
-padding: “4px 0”,
-borderBottom: “1px solid #111”,
-fontFamily: “monospace”
-}
-}, React.createElement(“span”, {
-style: {
-color: “#444”,
-marginRight: 6
-}
-}, new Date(l.t).toLocaleTimeString()), l.msg);
-})),
-// == METRICS ==
-tab === “metrics” && React.createElement(“div”, null, React.createElement(“div”, {
-style: S.mCard
-}, React.createElement(“div”, {
-style: {
-fontWeight: 800,
-color: “#00ff88”,
-marginBottom: 8
-}
-}, “Overview”), mRow(“Evaluated”, metrics.evaluated), mRow(“Signals”, metrics.signals), mRow(“Attempted”, metrics.attempted), mRow(“Filled”, metrics.filled), mRow(“Fill Rate”, metrics.attempted > 0 ? Math.round(metrics.filled / metrics.attempted * 100) + “%” : “–”), mRow(“W / L”, metrics.wins + “ / “ + metrics.losses), mRow(“Win Rate”, metrics.filled > 0 ? Math.round(metrics.wins / metrics.filled * 100) + “%” : “–”), mRow(“Placed”, “$” + (metrics.placed / 100).toFixed(2)), mRow(“P&L”, “$” + (metrics.earned / 100).toFixed(2))), Object.keys(metrics.byType).map(function (sig) {
-var bt = metrics.byType[sig];
-return React.createElement(“div”, {
-key: sig,
-style: S.mCard
-}, React.createElement(“div”, {
-style: {
-fontWeight: 800,
-color: “#00ff88”,
-marginBottom: 6
-}
-}, sig), mRow(“Attempts”, bt.a), mRow(“Filled”, bt.f), mRow(“W/L”, bt.w + “/” + bt.l), mRow(“P&L”, “$” + ((bt.e || 0) / 100).toFixed(2)));
-}), React.createElement(“button”, {
-style: Object.assign({}, S.btn, {
-marginTop: 16,
-background: “#1a1a2e”,
-color: “#888”,
-fontSize: 11
-}),
-onClick: function () {
-var m = initMetrics();
-setMetrics(m);
-saveM(m);
-}
-}, “Reset Metrics”))));
+  // -- DASHBOARD --
+  var shownMarkets = filter === "signals" ? markets.filter(function (m) {
+    return m.signal;
+  }) : markets;
+  return React.createElement("div", {
+    style: S.shell
+  },
+  // Header
+  React.createElement("div", {
+    style: S.hdr
+  }, React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, React.createElement("span", {
+    style: {
+      fontWeight: 900,
+      fontSize: 16,
+      color: "#00ff88"
+    }
+  }, "K"), React.createElement("span", {
+    style: {
+      fontWeight: 800,
+      fontSize: 13,
+      color: "#ddd"
+    }
+  }, "AUTO"), React.createElement("span", {
+    style: {
+      background: modeCol + "22",
+      color: modeCol,
+      border: "1px solid " + modeCol + "44",
+      padding: "2px 8px",
+      borderRadius: 6,
+      fontSize: 10,
+      fontWeight: 800
+    }
+  }, mode)), React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10
+    }
+  }, React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: "#ccc",
+      fontFamily: "monospace"
+    }
+  }, "$" + (balance / 100).toFixed(2)), React.createElement("button", {
+    style: {
+      background: eStopped ? "#444" : "#ff3b30",
+      color: "#fff",
+      border: "none",
+      borderRadius: 8,
+      padding: "4px 10px",
+      fontSize: 11,
+      fontWeight: 800,
+      cursor: "pointer"
+    },
+    onClick: toggleEStop
+  }, eStopped ? "RESUME" : "STOP"))),
+  // Tabs
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      borderBottom: "1px solid #1a2230",
+      background: "#0a0e14"
+    }
+  }, ["markets", "log", "metrics"].map(function (t) {
+    return React.createElement("button", {
+      key: t,
+      style: {
+        flex: 1,
+        background: "none",
+        border: "none",
+        borderBottom: tab === t ? "2px solid #00ff88" : "2px solid transparent",
+        color: tab === t ? "#fff" : "#666",
+        padding: "10px 0",
+        fontSize: 13,
+        fontWeight: 600,
+        cursor: "pointer"
+      },
+      onClick: function () {
+        setTab(t);
+      }
+    }, t.charAt(0).toUpperCase() + t.slice(1) + (t === "markets" ? " (" + shownMarkets.length + ")" : ""));
+  })),
+  // Body
+  React.createElement("div", {
+    style: {
+      flex: 1,
+      padding: 12,
+      overflowY: "auto"
+    }
+  },
+  // == MARKETS ==
+  tab === "markets" && React.createElement("div", null, React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginBottom: 10
+    }
+  }, React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      flex: 1,
+      fontSize: 12,
+      background: "#00ff8818",
+      color: "#00ff88",
+      border: "1px solid #00ff8833"
+    }),
+    onClick: doFetch,
+    disabled: fetching || demo
+  }, fetching ? "Loading..." : "Refresh"), React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      flex: 1,
+      fontSize: 12,
+      background: autoOn ? "#1a3320" : "#1a1a2e",
+      color: autoOn ? "#00ff88" : "#888",
+      border: "1px solid " + (autoOn ? "#00ff8844" : "#333")
+    }),
+    onClick: function () {
+      var n = !autoOn;
+      setAutoOn(n);
+      lsSet("kt_auto", String(n));
+    }
+  }, "Auto: " + (autoOn ? "ON" : "OFF")), React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      width: 70,
+      fontSize: 11,
+      background: filter === "signals" ? "#1a2a1a" : "#1a1a2e",
+      color: filter === "signals" ? "#00ff88" : "#888"
+    }),
+    onClick: function () {
+      setFilter(filter === "all" ? "signals" : "all");
+    }
+  }, filter === "all" ? "All" : "Signals")), shownMarkets.length === 0 && React.createElement("div", {
+    style: {
+      color: "#555",
+      textAlign: "center",
+      padding: 40
+    }
+  }, fetching ? "Loading..." : "No markets. Hit Refresh."), shownMarkets.slice(0, 100).map(function (m) {
+    var sig = m.signal;
+    var days = daysUntil(m.close_time);
+    var dLabel = days < 1 ? Math.round(days * 24) + "h" : days.toFixed(1) + "d";
+    var sigCol = sig ? sig.signal === "ARB" ? "#00ff88" : sig.signal === "VOL" ? "#4488ff" : "#ff8844" : "#1a2230";
+    return React.createElement("div", {
+      key: m.ticker,
+      style: {
+        background: "#0a0f14",
+        border: "1px solid #1a2230",
+        borderLeft: "3px solid " + sigCol,
+        borderRadius: 10,
+        padding: 12,
+        marginBottom: 8
+      }
+    }, React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        marginBottom: 4
+      }
+    }, React.createElement("div", {
+      style: {
+        fontSize: 13,
+        fontWeight: 600,
+        color: "#e0e0e0",
+        flex: 1,
+        lineHeight: 1.3
+      }
+    }, m.title), React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: "#555",
+        whiteSpace: "nowrap",
+        marginLeft: 8
+      }
+    }, dLabel)), React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 10,
+        fontSize: 11,
+        color: "#777"
+      }
+    }, React.createElement("span", null, "Y:" + m.yes_bid), React.createElement("span", null, "N:" + m.no_bid), React.createElement("span", null, "Last:" + m.last_price), m.volume > 0 && React.createElement("span", null, "Vol:" + (m.volume >= 1000 ? (m.volume / 1000).toFixed(0) + "k" : m.volume)), React.createElement("span", {
+      style: {
+        color: "#444"
+      }
+    }, m.ticker)), sig && React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginTop: 6
+      }
+    }, React.createElement("div", null, React.createElement("span", {
+      style: {
+        background: sigCol + "22",
+        color: sigCol,
+        border: "1px solid " + sigCol + "44",
+        padding: "2px 6px",
+        borderRadius: 4,
+        fontSize: 10,
+        fontWeight: 800,
+        marginRight: 6
+      }
+    }, sig.signal), React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: "#bbb"
+      }
+    }, sig.label)), React.createElement("button", {
+      style: {
+        background: "#00ff8818",
+        color: "#00ff88",
+        border: "1px solid #00ff8833",
+        borderRadius: 6,
+        padding: "3px 10px",
+        fontSize: 11,
+        fontWeight: 700,
+        cursor: "pointer"
+      },
+      onClick: function () {
+        executeTrade(m);
+      }
+    }, "Trade")));
+  })),
+  // == LOG ==
+  tab === "log" && React.createElement("div", null, logs.length === 0 && React.createElement("div", {
+    style: {
+      color: "#555",
+      textAlign: "center",
+      padding: 40
+    }
+  }, "No logs yet"), logs.map(function (l, i) {
+    var c = l.type === "error" ? "#ff6b6b" : l.type === "success" ? "#00ff88" : l.type === "warn" ? "#f0a030" : "#888";
+    return React.createElement("div", {
+      key: i,
+      style: {
+        fontSize: 11,
+        color: c,
+        padding: "4px 0",
+        borderBottom: "1px solid #111",
+        fontFamily: "monospace"
+      }
+    }, React.createElement("span", {
+      style: {
+        color: "#444",
+        marginRight: 6
+      }
+    }, new Date(l.t).toLocaleTimeString()), l.msg);
+  })),
+  // == METRICS ==
+  tab === "metrics" && React.createElement("div", null, React.createElement("div", {
+    style: S.mCard
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 800,
+      color: "#00ff88",
+      marginBottom: 8
+    }
+  }, "Overview"), mRow("Evaluated", metrics.evaluated), mRow("Signals", metrics.signals), mRow("Attempted", metrics.attempted), mRow("Filled", metrics.filled), mRow("Fill Rate", metrics.attempted > 0 ? Math.round(metrics.filled / metrics.attempted * 100) + "%" : "--"), mRow("W / L", metrics.wins + " / " + metrics.losses), mRow("Win Rate", metrics.filled > 0 ? Math.round(metrics.wins / metrics.filled * 100) + "%" : "--"), mRow("Placed", "$" + (metrics.placed / 100).toFixed(2)), mRow("P&L", "$" + (metrics.earned / 100).toFixed(2))), Object.keys(metrics.byType).map(function (sig) {
+    var bt = metrics.byType[sig];
+    return React.createElement("div", {
+      key: sig,
+      style: S.mCard
+    }, React.createElement("div", {
+      style: {
+        fontWeight: 800,
+        color: "#00ff88",
+        marginBottom: 6
+      }
+    }, sig), mRow("Attempts", bt.a), mRow("Filled", bt.f), mRow("W/L", bt.w + "/" + bt.l), mRow("P&L", "$" + ((bt.e || 0) / 100).toFixed(2)));
+  }), React.createElement("button", {
+    style: Object.assign({}, S.btn, {
+      marginTop: 16,
+      background: "#1a1a2e",
+      color: "#888",
+      fontSize: 11
+    }),
+    onClick: function () {
+      var m = initMetrics();
+      setMetrics(m);
+      saveM(m);
+    }
+  }, "Reset Metrics"))));
 }
 function mRow(label, val) {
-return React.createElement(“div”, {
-style: {
-display: “flex”,
-justifyContent: “space-between”,
-padding: “3px 0”,
-fontSize: 12
-}
-}, React.createElement(“span”, {
-style: {
-color: “#888”
-}
-}, label), React.createElement(“span”, {
-style: {
-color: “#ccc”,
-fontFamily: “monospace”
-}
-}, val));
+  return React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      padding: "3px 0",
+      fontSize: 12
+    }
+  }, React.createElement("span", {
+    style: {
+      color: "#888"
+    }
+  }, label), React.createElement("span", {
+    style: {
+      color: "#ccc",
+      fontFamily: "monospace"
+    }
+  }, val));
 }
 var S = {
-page: {
-minHeight: “100vh”,
-display: “flex”,
-alignItems: “center”,
-justifyContent: “center”,
-padding: 16,
-background: “#06080b”,
-color: “#e0e0e0”,
-fontFamily: “-apple-system, BlinkMacSystemFont, sans-serif”
-},
-card: {
-background: “#0d1117”,
-border: “1px solid #1a2230”,
-borderRadius: 16,
-padding: 24,
-width: “100%”,
-maxWidth: 420,
-display: “flex”,
-flexDirection: “column”,
-gap: 12
-},
-shell: {
-minHeight: “100vh”,
-background: “#06080b”,
-color: “#e0e0e0”,
-fontFamily: “-apple-system, BlinkMacSystemFont, sans-serif”,
-display: “flex”,
-flexDirection: “column”
-},
-hdr: {
-display: “flex”,
-justifyContent: “space-between”,
-alignItems: “center”,
-padding: “10px 14px”,
-borderBottom: “1px solid #1a2230”,
-background: “#0a0e14”
-},
-inp: {
-background: “#0a0f14”,
-border: “1px solid #1a2230”,
-borderRadius: 10,
-padding: “10px 14px”,
-color: “#e0e0e0”,
-fontSize: 13,
-width: “100%”,
-outline: “none”,
-display: “block”
-},
-btn: {
-border: “none”,
-borderRadius: 10,
-padding: “10px 16px”,
-fontSize: 14,
-fontWeight: 700,
-cursor: “pointer”,
-color: “#e0e0e0”,
-background: “#1a2230”,
-display: “block”,
-width: “100%”,
-textAlign: “center”
-},
-mCard: {
-background: “#0a0f14”,
-border: “1px solid #1a2230”,
-borderRadius: 10,
-padding: 14,
-marginBottom: 10
-}
+  page: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    background: "#06080b",
+    color: "#e0e0e0",
+    fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif"
+  },
+  card: {
+    background: "#0d1117",
+    border: "1px solid #1a2230",
+    borderRadius: 16,
+    padding: 24,
+    width: "100%",
+    maxWidth: 420,
+    display: "flex",
+    flexDirection: "column",
+    gap: 12
+  },
+  shell: {
+    minHeight: "100vh",
+    background: "#06080b",
+    color: "#e0e0e0",
+    fontFamily: "-apple-system, BlinkMacSystemFont, sans-serif",
+    display: "flex",
+    flexDirection: "column"
+  },
+  hdr: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "10px 14px",
+    borderBottom: "1px solid #1a2230",
+    background: "#0a0e14"
+  },
+  inp: {
+    background: "#0a0f14",
+    border: "1px solid #1a2230",
+    borderRadius: 10,
+    padding: "10px 14px",
+    color: "#e0e0e0",
+    fontSize: 13,
+    width: "100%",
+    outline: "none",
+    display: "block"
+  },
+  btn: {
+    border: "none",
+    borderRadius: 10,
+    padding: "10px 16px",
+    fontSize: 14,
+    fontWeight: 700,
+    cursor: "pointer",
+    color: "#e0e0e0",
+    background: "#1a2230",
+    display: "block",
+    width: "100%",
+    textAlign: "center"
+  },
+  mCard: {
+    background: "#0a0f14",
+    border: "1px solid #1a2230",
+    borderRadius: 10,
+    padding: 14,
+    marginBottom: 10
+  }
 };
 try {
-ReactDOM.createRoot(document.getElementById(‘root’)).render(
-React.createElement(KalshiTrader, null)
-);
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    React.createElement(KalshiTrader, null)
+  );
 } catch(e) {
-document.getElementById(‘root’).innerHTML = ‘<pre style="color:red;padding:20px">’ + e.message + ‘</pre>’;
+  document.getElementById('root').innerHTML = '<pre style="color:red;padding:20px">' + e.message + '</pre>';
 }
 
 </script>
