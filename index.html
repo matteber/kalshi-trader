@@ -106,7 +106,6 @@ function dtu(iso){if(!iso)return 999;return(new Date(iso)-Date.now())/864e5;}
 
 function analyze(m,cfg){
   var days=dtu(m.close_time);
-  if(days<=0||days>cfg.dw)return null;
   var yb=m.yes_bid,ya=m.yes_ask,nb=m.no_bid,lp=m.last_price;
   var sum=yb+nb,mid=Math.round((yb+ya)/2),sp=ya-yb;
   // Urgency: sooner markets score higher
