@@ -191,11 +191,11 @@ function analyze(m,cfg){
 
   // --- STRATEGY 1: ARBITRAGE ---
   // If YES bid + NO bid < 93, buying both sides locks in guaranteed profit
-  // This is risk-free edge. Extremely rare but highest priority.
-  if(sum>0&&sum<=93){
+  // Both sides must have real bids (>2c) and market must have volume
+  if(yb>=3&&nb>=3&&sum<=93&&m.volume>=500){
     var arbEdge=(100-sum)/100;
     return{sig:"ARB",side:"yes",edge:arbEdge,prob:1.0,price:yb,
-      label:"Arb +"+(100-sum)+"c guaranteed",score:arbEdge*100*urg};
+      label:"Arb +"+(100-sum)+"c (Y:"+yb+" N:"+nb+")",score:arbEdge*100*urg};
   }
 
   // --- STRATEGY 2: VOLUME MOMENTUM ---
@@ -221,7 +221,7 @@ function analyze(m,cfg){
   // Markets priced > 93% or < 7% tend to overstate certainty.
   // Mean reversion edge: the last few % of certainty are often mispriced.
   // Only trade when liquid (spread <= 10) and within 7 days (time pressure).
-  if(days<=7&&sp>=0&&sp<=10){
+  if(days<=7&&sp>=0&&sp<=10&&m.volume>=500){
     if(mid>=93){
       var fadeEdge=(mid-90)/100;
       if(fadeEdge>=cfg.me)return{sig:"FADE",side:"no",edge:fadeEdge,prob:(100-mid)/100,price:nb,
@@ -346,7 +346,7 @@ function App(){
       else if(m.indexOf("401")>=0||m.indexOf("403")>=0)setErr("Credentials rejected.");
       else if(m.indexOf("import")>=0||m.indexOf("pkcs")>=0)setErr("Bad key format.");
       else setErr(m);setLd(false);});}
-  function goPaper(){setPaper(true);setScr("dash");log("Paper trading active");if(lsg("kt_ao")==="1"){setAon(true);log("Auto-trade resuming");}}
+  function goPaper(){setPaper(true);setBal(10000);setScr("dash");log("Paper trading active ($100 starting balance)");if(lsg("kt_ao")==="1"){setAon(true);log("Auto-trade resuming");}}
   function goLive(){setPaper(false);setScr("dash");log("LIVE trading","warn");if(lsg("kt_ao")==="1"){setAon(true);log("Auto-trade resuming");}}
 
   // ---- FETCH ----
@@ -356,8 +356,9 @@ function App(){
       var sh=[],sp=0,dead=0;
       for(var i=0;i<all.length;i++){
         if(isSport(all[i])){sp++;continue;}
-        // Skip dead markets: no bid, no volume = can't trade
-        if(all[i].yes_bid<=0&&all[i].volume<=0){dead++;continue;}
+        // Skip dead/illiquid markets: need real bids and some volume
+        if(all[i].yes_bid<=1&&all[i].no_bid<=1){dead++;continue;}
+        if(all[i].volume<100){dead++;continue;}
         var days=dtu(all[i].close_time);if(days<=0||days>cfg.dw)continue;
         all[i].signal=analyze(all[i],cfg);sh.push(all[i]);
       }
@@ -634,7 +635,7 @@ function App(){
               R("div",{style:{fontWeight:700,color:"#aaa",fontSize:12,marginBottom:4}},k),
               mr("Filled",b.f+"/"+b.a),mr("W/L",b.w+"/"+b.l),mr("P&L","$"+((b.e||0)/100).toFixed(2)));})):null,
         R("button",{style:cx(P.btn,{marginTop:16,background:"#1a1a2e",color:"#666",fontSize:11}),
-          onClick:function(){var m=freshM();setMet(m);svM(m);traded.current={};setTrades([]);}},"Reset All Metrics")
+          onClick:function(){var m=freshM();setMet(m);svM(m);traded.current={};setTrades([]);setBal(10000);log("Paper account reset to $100.00");}},"Reset Paper Account")
       );})():null
     )
   );
