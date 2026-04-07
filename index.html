@@ -96,7 +96,7 @@ var SAFE=["fed ","federal reserve","rate cut","rate hike","interest rate","fomc"
   "minimum wage","strike ","union ","layoff","hiring freeze",
   "tiktok ban","antitrust","monopoly","merger","acquisition",
   "population","census","birth rate","life expectancy",
-  "space","mars","moon","nasa","launch",
+  "space","mars ","moon ","nasa","launch",
   "rain","snow","ice","flood","drought","heat wave"];
 
 // Sports league/org keywords
@@ -135,14 +135,14 @@ var TEAMS=["yankees","red sox","dodgers","cubs","astros","mets","braves","philli
   "washington","chicago","seattle","green bay","baltimore","buffalo","jacksonville","nashville","carolina","st. louis","st louis",
   "toronto","montreal","vancouver","ottawa","calgary","edmonton","winnipeg"];
 
-// Additional multi-game / parlay detection
-// Any title with 3+ comma-separated "yes X" or "no X" entries is a sports bracket/parlay
+// Sports parlay/multi-outcome detection
+// ANY title with 2+ comma-separated "yes X" or "no X" entries is a sports parlay
 function isMultiGame(title){
   var parts=title.split(",");
-  if(parts.length<3)return false;
+  if(parts.length<2)return false;
   var ynCount=0;
   for(var i=0;i<parts.length;i++){if(/^\s*(yes|no)\s+/i.test(parts[i]))ynCount++;}
-  return ynCount>=3;
+  return ynCount>=2;
 }
 
 function isSport(m){
@@ -376,9 +376,11 @@ function App(){
     if(demo)return Promise.resolve(mkts);
     setFtg(true);log("Fetching markets...");
     return fetchMkts().then(function(all){
-      var sh=[],sp=0;
+      var sh=[],sp=0,dead=0;
       for(var i=0;i<all.length;i++){
         if(isSport(all[i])){sp++;continue;}
+        // Skip dead markets: no bid, no volume = can't trade
+        if(all[i].yes_bid<=0&&all[i].volume<=0){dead++;continue;}
         var days=dtu(all[i].close_time);if(days<=0||days>cfg.dw)continue;
         all[i].signal=analyze(all[i],cfg);sh.push(all[i]);
       }
@@ -390,7 +392,7 @@ function App(){
       });
       setMkts(sh);
       var sc=sh.filter(function(m){return m.signal;}).length;
-      log("Found "+sh.length+" non-sports markets ("+sp+" sports filtered), "+sc+" signals, max bet: "+ct(maxBet()));
+      log("Found "+sh.length+" tradeable markets ("+sp+" sports, "+dead+" dead filtered), "+sc+" signals, max bet: "+ct(maxBet()));
       setMet(function(p){var n=cx(p);n.ev+=all.length;n.sg+=sc;svM(n);return n;});
       setFtg(false);return sh;
     }).catch(function(e){log("Fetch error: "+e.message,"error");setFtg(false);return[];});
