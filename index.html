@@ -118,12 +118,6 @@ function isMultiGame(title){
 }
 
 function isSport(m){
-  if(isMultiGame(m.title))return true;
-  var t=(m.ticker+" "+m.title+" "+m.event_ticker).toLowerCase();
-  var i;
-  if(/(over|under)\s+\d+\.?\d*\s*(runs?|points?|goals?|hits?|strikeouts?|yards?|touchdowns?|saves?|assists?|rebounds?|rbis?)/i.test(m.title))return true;
-  if(/wins?\s+by\s+(over|under|exactly)\s+\d/i.test(m.title))return true;
-  if(/\bvs\.?\s/i.test(m.title))return true;
   return false;
 }
 
