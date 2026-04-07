@@ -91,9 +91,7 @@ function isSport(m){
   var i;
   for(i=0;i<SAFE.length;i++){if(t.indexOf(SAFE[i])>=0)return false;}
   for(i=0;i<LEAGUES.length;i++){if(t.indexOf(LEAGUES[i])>=0)return true;}
-  if(/[A-Z][a-z]+\s+[A-Z][a-z']+\s*:\s*\d+\+/.test(m.title))return true;
   if(/(over|under)\s+\d+\.?\d*\s*(runs?|points?|goals?|hits?|strikeouts?|yards?|touchdowns?|saves?|assists?|rebounds?|rbis?)/i.test(m.title))return true;
-  if(/wins?\s+by\s+(over|under|exactly)\s+\d/i.test(m.title))return true;
   if(/\bvs\.?\s/i.test(m.title))return true;
   return false;
 }
