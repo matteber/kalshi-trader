@@ -77,11 +77,7 @@ function norm(m){
 // ============================================================
 var SAFE=[];
 
-var LEAGUES=["nfl","nba","nhl","mlb","ncaa","mls","ufc","mma","pga","lpga","nascar","wta","atp",
-  "epl","premier league","la liga","bundesliga","serie a","ligue 1","champions league","europa league",
-  "fifa","uefa","concacaf","copa america","world cup","super bowl","pro bowl",
-  "stanley cup","world series","nba finals","march madness","final four",
-  "masters tournament","pga championship","ryder cup","daytona","indy 500"];
+var LEAGUES=[];
 
 function isMultiGame(title){
   var parts=title.split(",");if(parts.length<2)return false;
