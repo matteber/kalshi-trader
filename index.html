@@ -83,6 +83,9 @@ var SP_WORDS=["nfl","nba","nhl","mlb","ncaa","mls","ufc","mma","pga","nascar","e
 " vs "," at ","boxing","tennis match","formula 1"," f1 ","grand prix","race winner","pole position","driver wins"];
 function isSport(m){
   var t=(m.ticker+" "+m.title+" "+(m.event_ticker||"")).toLowerCase();
+  // Whitelist: these keywords mean it's definitely NOT sports
+  var safe=["fed ","rate ","cpi","inflation","gdp","recession","tariff","congress","senate","house ","president","election","governor","mayor","bitcoin","btc","ethereum","eth","crypto","solana","sol ","dogecoin","temperature","hurricane","tornado","snow","rain","weather","oscar","grammy","emmy","billboard","spotify","netflix","amazon","apple","google","tesla","nvidia","microsoft","stock","s&p","nasdaq","dow ","oil ","gold ","silver","mortgage","housing","jobs","unemployment","wage","gas price","executive order","supreme court","impeach","cabinet","nato","ukraine","iran","china trade","debt ceiling","government shutdown","border","immigration"];
+  for(var j=0;j<safe.length;j++){if(t.indexOf(safe[j])>=0)return false;}
   var i;
   for(i=0;i<SP_WORDS.length;i++){if(t.indexOf(SP_WORDS[i])>=0)return true;}
   for(i=0;i<SP_TEAMS.length;i++){if(t.indexOf(SP_TEAMS[i])>=0)return true;}
