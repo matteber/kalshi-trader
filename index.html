@@ -127,9 +127,27 @@ var TEAMS=["yankees","red sox","dodgers","cubs","astros","mets","braves","philli
   "bruins","penguins","oilers","avalanche","hurricanes","rangers","stars","lightning","maple leafs","senators","canadiens","flames","canucks","islanders","capitals","wild","predators","blues","red wings","blackhawks","kraken","ducks","devils","flyers","sabres","blue jackets","golden knights",
   "wolverines","huskies","bulldogs","crimson tide","fighting illini","wildcats","spartans","buckeyes","longhorns","sooners","jayhawks","tar heels","blue devils","seminoles","gators","aggies","razorbacks","volunteers","commodores","gamecocks","hoosiers","hawkeyes","badgers","boilermakers",
   "inter miami","lafc","la galaxy","atlanta united","sounders","timbers","whitecaps","fire fc","nashville sc","austin fc",
-  "arsenal","liverpool","man city","manchester united","chelsea","tottenham","barcelona","real madrid","juventus","bayern munich","psg"];
+  "arsenal","liverpool","man city","manchester united","chelsea","tottenham","barcelona","real madrid","juventus","bayern munich","psg",
+  "sporting cp","girona","villarreal","sevilla","genoa","angers","olympique",
+  "cleveland","cincinnati","pittsburgh","houston","philadelphia","detroit","san antonio","denver","minnesota","milwaukee","boston","brooklyn",
+  "phoenix","orlando","charlotte","atlanta","miami","tampa","dallas","kansas city","las vegas","anaheim","san jose","columbus",
+  "portland","sacramento","memphis","indianapolis","new orleans","oklahoma city","salt lake","san francisco","los angeles","new york",
+  "washington","chicago","seattle","green bay","baltimore","buffalo","jacksonville","nashville","carolina","st. louis","st louis",
+  "toronto","montreal","vancouver","ottawa","calgary","edmonton","winnipeg"];
+
+// Additional multi-game / parlay detection
+// Any title with 3+ comma-separated "yes X" or "no X" entries is a sports bracket/parlay
+function isMultiGame(title){
+  var parts=title.split(",");
+  if(parts.length<3)return false;
+  var ynCount=0;
+  for(var i=0;i<parts.length;i++){if(/^\s*(yes|no)\s+/i.test(parts[i]))ynCount++;}
+  return ynCount>=3;
+}
 
 function isSport(m){
+  // FIRST: multi-game/parlay detection (catches "yes Cleveland,yes Cincinnati,..." patterns)
+  if(isMultiGame(m.title))return true;
   var t=(m.ticker+" "+m.title+" "+m.event_ticker).toLowerCase();
   var i;
   // Step 1: Whitelist check - if it contains a safe keyword, it is NOT sports
@@ -145,9 +163,6 @@ function isSport(m){
   if(/[A-Z][a-z]+\s+[A-Z][a-z']+[:\s]+\d+\+/.test(m.title))return true;
   // Over/under sports lines
   if(/(over|under)\s+\d+\.?\d*\s*(runs?|points?|goals?|hits?|strikeouts?|yards?|touchdowns?|saves?|assists?|rebounds?)/i.test(m.title))return true;
-  // "yes CityA,yes CityB,yes CityC" bracket pattern (4+ comma-separated yes/no entries)
-  var parts=m.title.split(",");
-  if(parts.length>=4){var allYN=true;for(i=0;i<parts.length;i++){if(!/^\s*(yes|no)\s+/i.test(parts[i])){allYN=false;break;}}if(allYN)return true;}
   // "Team at Team" or "Team vs Team" pattern with caps
   if(/[A-Z][a-z]+\s+(at|vs\.?)\s+[A-Z][a-z]+/.test(m.title))return true;
   // "wins by over/under X.X"
@@ -480,8 +495,8 @@ function App(){
   var projW=projD*7;
   var pnl=met.ea/100;
   var roi=met.pl>0?(met.ea/met.pl*100).toFixed(1):"0.0";
-  var md=demo?"DEMO":paper?"PAPER":"LIVE";
-  var mc=demo?"#f0a030":paper?"#00ff88":"#ff3b30";
+  var md=paper?"PAPER":"LIVE";
+  var mc=paper?"#00ff88":"#ff3b30";
   var pnlC=pnl>=0?"#00ff88":"#ff6b6b";
 
   // ============================================================
@@ -496,8 +511,7 @@ function App(){
     R("textarea",{style:cx(P.inp,{height:90,fontFamily:"monospace",fontSize:10}),placeholder:"RSA Private Key (PEM)",value:pem,onChange:function(e){setPem(e.target.value);}}),
     R("input",{style:P.inp,placeholder:"CORS Proxy URL",value:px,onChange:function(e){setPx2(e.target.value);}}),
     err?R("div",{style:{color:"#ff6b6b",fontSize:12}},err):null,
-    R("button",{style:cx(P.btn,P.bg),onClick:doLogin,disabled:ld||!kid||!pem},ld?"Connecting...":"Connect"),
-    R("button",{style:cx(P.btn,{background:"#1a1a2e",color:"#888",marginTop:8}),onClick:goDemo},"Demo (Offline)")));
+    R("button",{style:cx(P.btn,P.bg),onClick:doLogin,disabled:ld||!kid||!pem},ld?"Connecting...":"Connect")));
 
   // CORS
   if(scr==="cors")return R("div",{style:P.pg},R("div",{style:P.cd},
@@ -559,7 +573,7 @@ function App(){
       tab==="markets"?R("div",null,
         // Controls
         R("div",{style:{display:"flex",gap:8,marginBottom:10}},
-          R("button",{style:cx(P.btn,{flex:"1",fontSize:12},P.bg),onClick:doFetch,disabled:ftg||demo},ftg?"Loading...":"Refresh"),
+          R("button",{style:cx(P.btn,{flex:"1",fontSize:12},P.bg),onClick:doFetch,disabled:ftg},ftg?"Loading...":"Refresh"),
           R("button",{style:cx(P.btn,{flex:"1",fontSize:12,background:aon?"#0a1a0f":"#1a1a2e",color:aon?"#00ff88":"#888",
             border:"1px solid "+(aon?"#00ff8844":"#333")}),
             onClick:function(){var n=!aon;setAon(n);lss("kt_ao",n?"1":"0");if(n)log("Auto-trade ON");else log("Auto-trade OFF");}},
