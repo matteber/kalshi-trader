@@ -69,68 +69,6 @@ function norm(m){
 }
 
 // ============================================================
-// SPORTS FILTER
-// Layer 1: SAFE whitelist - if matched, definitely NOT sports
-// Layer 2: League names - if matched, definitely sports
-// Layer 3: Pattern checks - parlays, player stats, over/under
-// NO team names, NO generic sport terms (those caused false positives)
-// ============================================================
-var SAFE=["fed ","federal reserve","rate cut","rate hike","interest rate","fomc","basis point","bps",
-  "cpi","inflation","gdp","recession","unemployment","payroll","jobs number","jobless","nonfarm",
-  "tariff","trade war","debt ceiling","government shutdown","executive order","impeach","legislation",
-  "congress","senate","house of rep","supreme court","scotus","governor","mayor","president",
-  "bitcoin","btc ","ethereum","eth ","solana","sol ","dogecoin","doge","xrp","crypto","defi","token",
-  "s&p","spy ","nasdaq","qqq","dow ","djia","russell","stock market","market crash","index ",
-  "gold ","silver ","oil ","wti","natural gas","crude","commodity",
-  "temperature","high temp","low temp","hurricane","tornado","snowfall","rainfall","weather","climate",
-  "wildfire","earthquake","flood","drought","heat wave","wind ",
-  "oscar","grammy","emmy","golden globe","billboard","spotify","netflix","youtube","tiktok",
-  "rotten tomatoes","box office","streaming","album ","song ",
-  "elon musk","jeff bezos","zuckerberg","warren buffett","net worth","wealth",
-  "tesla","tsla","nvidia","nvda","apple","aapl","amazon","amzn","google","goog","microsoft","msft",
-  "meta ","openai","spacex","ai ","artificial intelligence","chatgpt",
-  "election","democrat","republican","gop ","ballot","vote ","poll ",
-  "vaccine","pandemic","covid","bird flu","measles","fda","cdc",
-  "ukraine","russia","china","iran","nato","sanction","gaza","israel","war ","invasion",
-  "mortgage","housing","home price","rent ","real estate",
-  "gas price","energy","electric vehicle","ev ",
-  "debt ","deficit","credit rating","bond ","treasury","yield ","interest",
-  "wage","layoff","hiring","union ",
-  "antitrust","monopoly","merger","acquisition","ipo","earnings","revenue",
-  "population","census","birth","life expectancy",
-  "space","mars ","moon ","nasa","launch","rocket",
-  "mention","remark","speech","address","press conference","say during",
-  "what will","how many","how much","how high","how low","will the","will a ","tariff",
-  "executive","cabinet","vance","trump","biden","harris","desantis","newsom","pritzker",
-  "approval rating","favorability","immigration","border ",
-  "15-min","15 min","daily ","weekly ","price above","price below","close above","close below"];
-
-var LEAGUES=["nfl","nba","nhl","mlb","ncaa","mls","ufc","mma","pga","lpga","nascar","wta","atp",
-  "epl","premier league","la liga","bundesliga","serie a","ligue 1","champions league","europa league",
-  "fifa","uefa","concacaf","copa america","world cup","super bowl","pro bowl",
-  "stanley cup","world series","nba finals","march madness","final four",
-  "masters tournament","pga championship","ryder cup","daytona","indy 500"];
-
-function isMultiGame(title){
-  var parts=title.split(",");if(parts.length<2)return false;
-  var yn=0;for(var i=0;i<parts.length;i++){if(/^\s*(yes|no)\s+/i.test(parts[i]))yn++;}
-  return yn>=2;
-}
-
-function isSport(m){
-  if(isMultiGame(m.title))return true;
-  var t=(m.ticker+" "+m.title+" "+m.event_ticker).toLowerCase();
-  var i;
-  for(i=0;i<SAFE.length;i++){if(t.indexOf(SAFE[i])>=0)return false;}
-  for(i=0;i<LEAGUES.length;i++){if(t.indexOf(LEAGUES[i])>=0)return true;}
-  if(/[A-Z][a-z]+\s+[A-Z][a-z']+\s*:\s*\d+\+/.test(m.title))return true;
-  if(/(over|under)\s+\d+\.?\d*\s*(runs?|points?|goals?|hits?|strikeouts?|yards?|touchdowns?|saves?|assists?|rebounds?|rbis?)/i.test(m.title))return true;
-  if(/wins?\s+by\s+(over|under|exactly)\s+\d/i.test(m.title))return true;
-  if(/\bvs\.?\s/i.test(m.title))return true;
-  return false;
-}
-
-// ============================================================
 // MARKET FETCHING (paginated, limit=1000)
 // ============================================================
 function fetchMkts(){
