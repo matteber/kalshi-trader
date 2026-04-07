@@ -54,7 +54,7 @@ function norm(m){
   var yb=d2c(m.yes_bid_dollars),ya=d2c(m.yes_ask_dollars),nb=d2c(m.no_bid_dollars),lp=d2c(m.last_price_dollars),
   vol=parseFloat(m.volume_24h_fp||m.volume_fp||"0")||0;
   if(yb==null)yb=lp!=null?lp:50;if(ya==null)ya=yb+4;if(nb==null)nb=100-ya;if(lp==null)lp=yb;
-  return{ticker:m.ticker||"",title:m.title||m.yes_sub_title||m.ticker||"?",close_time:m.close_time||"",
+  return{ticker:m.ticker||"",event_ticker:m.event_ticker||"",title:m.title||m.yes_sub_title||m.ticker||"?",close_time:m.close_time||"",
     yes_bid:yb,yes_ask:ya,no_bid:nb,last_price:lp,volume:vol};
 }
 function fetchMkts(){
@@ -65,17 +65,67 @@ function fetchMkts(){
   return go();
 }
 function dtu(iso){if(!iso)return 999;return(new Date(iso)-Date.now())/864e5;}
+
+// Sports filter - comprehensive pattern matching on ticker + title
+var SP_TEAMS=["yankees","red sox","dodgers","cubs","astros","mets","braves","phillies","padres","brewers","guardians","orioles","twins","mariners","royals","tigers","rays","rangers","pirates","reds","cardinals","rockies","marlins","nationals","athletics","white sox","angels","blue jays","diamondbacks",
+"lakers","celtics","warriors","bucks","heat","nets","knicks","suns","76ers","sixers","nuggets","cavaliers","cavs","clippers","mavericks","mavs","timberwolves","wolves","thunder","pelicans","grizzlies","kings","hawks","bulls","raptors","pacers","magic","pistons","blazers","trail blazers","wizards","hornets","spurs","jazz","rockets",
+"chiefs","eagles","bills","ravens","lions","49ers","niners","cowboys","packers","vikings","texans","steelers","bengals","dolphins","chargers","seahawks","rams","commanders","bears","colts","broncos","saints","falcons","jaguars","titans","browns","jets","panthers","raiders","cardinals","giants","patriots",
+"bruins","penguins","oilers","panthers","avalanche","hurricanes","rangers","stars","lightning","maple leafs","jets","senators","canadiens","flames","canucks","islanders","capitals","wild","predators","blues","red wings","blackhawks","kraken","ducks","devils","flyers","sabres","blue jackets","sharks","golden knights",
+"wolverines","huskies","bulldogs","crimson tide","fighting illini","wildcats","spartans","buckeyes","longhorns","sooners","jayhawks","tar heels","blue devils","seminoles","gators","tigers","aggies","razorbacks","volunteers","commodores","gamecocks","hoosiers","hawkeyes","badgers","boilermakers","cyclones","mountaineers","bears","red raiders","horned frogs","cowboys"];
+var SP_WORDS=["nfl","nba","nhl","mlb","ncaa","mls","ufc","mma","pga","nascar","epl","premier league","la liga","bundesliga","serie a","ligue 1","champions league","fifa","uefa",
+"touchdown","home run","strikeout","rebound","assist","goal","hat trick","field goal","slam dunk","rushing yard","passing yard","sack","interception","stolen base","rbi",
+"super bowl","world series","stanley cup","nba finals","march madness","final four","playoffs","championship game","pro bowl",
+"pitcher","quarterback","batter","goalie","wide receiver","running back","linebacker","shortstop","outfielder","forward","center","guard","defenseman",
+"game 1","game 2","game 3","game 4","game 5","game 6","game 7","first half","second half","overtime","shootout","innings","at bat",
+"moneyline","spread","over under","total score","total points","total runs","total goals","point spread",
+"wins by","beats","defeats","victory over","match winner","set winner","fight winner","bout","round","knockout","submission","decision",
+"valero","masters tournament","open championship","us open golf","pga championship","ryder cup","lpga",
+" vs "," at ","boxing","tennis match","formula 1"," f1 ","grand prix","race winner","pole position","driver wins"];
+function isSport(m){
+  var t=(m.ticker+" "+m.title+" "+(m.event_ticker||"")).toLowerCase();
+  var i;
+  for(i=0;i<SP_WORDS.length;i++){if(t.indexOf(SP_WORDS[i])>=0)return true;}
+  for(i=0;i<SP_TEAMS.length;i++){if(t.indexOf(SP_TEAMS[i])>=0)return true;}
+  // Player stat pattern: "FirstName LastName: N+" or "FirstName LastName N+"
+  if(/[A-Z][a-z]+\s+[A-Z][a-z']+[:\s]+\d+\+/.test(m.title))return true;
+  // City vs city / team at team
+  if(/\b(yes|no)\s+[A-Z][a-z]+.*,\s*(yes|no)\s+[A-Z][a-z]+/.test(m.title))return true;
+  // "wins by over X.X runs/points/goals"
+  if(/wins?\s+by\s+(over|under|exactly)\s+\d/i.test(m.title))return true;
+  // Over X.X runs/points/goals scored
+  if(/(over|under)\s+\d+\.?\d*\s*(runs?|points?|goals?|hits?|strikeouts?|rbis?|yards?|touchdowns?|saves?|assists?|rebounds?)\s*(scored)?/i.test(m.title))return true;
+  return false;
+}
 function analyze(m,c){
   var days=dtu(m.close_time);if(days<=0||days>c.dw)return null;
   var yb=m.yes_bid,nb=m.no_bid,ya=m.yes_ask,sum=yb+nb,mid=Math.round((yb+ya)/2);
-  if(sum>0&&sum<=93)return{sig:"ARB",side:"yes",edge:(100-sum)/100,prob:1,price:yb,label:"Arb +"+(100-sum)+"c"};
   var sp=ya-yb;
+  // Urgency multiplier: sooner markets get priority scoring
+  var urg=days<0.5?1.8:days<1?1.4:days<2?1.2:days<4?1.1:1.0;
+
+  // 1. Arbitrage: YES+NO < 93 (guaranteed profit)
+  if(sum>0&&sum<=93){var ae=(100-sum)/100;return{sig:"ARB",side:"yes",edge:ae,prob:1,price:yb,label:"Arb +"+(100-sum)+"c",score:ae*urg*100};}
+
+  // 2. Volume-confirmed momentum: high volume + tight spread = informed money
   if(m.volume>=5000&&sp<=6&&sp>=0){
-    if(mid>=60&&mid<=85){var e1=((mid-50)/100)*0.15;if(e1>=c.me)return{sig:"VOL",side:"yes",edge:e1,prob:mid/100,price:yb,label:"Vol "+mid+"%"};}
-    if(mid>=15&&mid<=40){var e2=((50-mid)/100)*0.15;if(e2>=c.me)return{sig:"VOL",side:"no",edge:e2,prob:(100-mid)/100,price:nb,label:"Vol "+mid+"%"};}
+    if(mid>=58&&mid<=85){var e1=((mid-50)/100)*0.12*urg;if(e1>=c.me)return{sig:"VOL",side:"yes",edge:e1,prob:mid/100,price:yb,label:"Vol "+mid+"% "+Math.round(m.volume/1000)+"k",score:e1*urg*50};}
+    if(mid>=15&&mid<=42){var e2=((50-mid)/100)*0.12*urg;if(e2>=c.me)return{sig:"VOL",side:"no",edge:e2,prob:(100-mid)/100,price:nb,label:"Vol "+mid+"% "+Math.round(m.volume/1000)+"k",score:e2*urg*50};}
   }
-  if(mid>=92){var e3=(mid-89)/100;if(e3>=c.me)return{sig:"FADE",side:"no",edge:e3,prob:(100-mid)/100,price:nb,label:"Fade "+mid+"%"};}
-  if(mid<=8){var e4=(11-mid)/100;if(e4>=c.me)return{sig:"FADE",side:"yes",edge:e4,prob:mid/100,price:yb,label:"Fade "+mid+"%"};}
+
+  // 3. Fade extremes: mean reversion on overpriced certainty
+  // Only when spread is reasonable (liquid) and days < 7 (time pressure)
+  if(days<7&&sp<=10){
+    if(mid>=93){var e3=(mid-90)/100*urg;if(e3>=c.me)return{sig:"FADE",side:"no",edge:e3,prob:(100-mid)/100,price:nb,label:"Fade "+mid+"%",score:e3*urg*40};}
+    if(mid<=7){var e4=(10-mid)/100*urg;if(e4>=c.me)return{sig:"FADE",side:"yes",edge:e4,prob:mid/100,price:yb,label:"Fade "+mid+"%",score:e4*urg*40};}
+  }
+
+  // 4. Time decay value: near-expiry + moderate price + volume = real edge
+  // Markets closing within 24h where price is in 20-80 range and has volume
+  if(days<1&&m.volume>=1000&&sp<=8){
+    if(mid>=55&&mid<=80){var e5=((mid-50)/100)*0.1*urg;if(e5>=c.me)return{sig:"TVAL",side:"yes",edge:e5,prob:mid/100,price:yb,label:"TimeVal "+mid+"% "+Math.round(days*24)+"h",score:e5*urg*60};}
+    if(mid>=20&&mid<=45){var e6=((50-mid)/100)*0.1*urg;if(e6>=c.me)return{sig:"TVAL",side:"no",edge:e6,prob:(100-mid)/100,price:nb,label:"TimeVal "+mid+"% "+Math.round(days*24)+"h",score:e6*urg*60};}
+  }
+
   return null;
 }
 function kelly(prob,price,frac,max,days){
@@ -84,7 +134,7 @@ function kelly(prob,price,frac,max,days){
   u=days<0.5?1.5:days<1?1.25:days<2?1.1:1,r=Math.min(Math.round(f*frac*max*u),max);return isNaN(r)?0:r;
 }
 function sim(s){
-  var fr={ARB:0.95,VOL:0.78,FADE:0.7},er={ARB:1,VOL:0.55,FADE:0.25};
+  var fr={ARB:0.95,VOL:0.78,FADE:0.70,TVAL:0.82},er={ARB:1,VOL:0.55,FADE:0.25,TVAL:0.45};
   if(Math.random()>(fr[s.sig]||0.7))return{filled:false};
   var tp=Math.min(0.97,Math.max(0.03,(s.prob||0.5)+s.edge*(er[s.sig]||0.5)+(Math.random()-0.5)*0.06));
   return{filled:true,won:Math.random()<tp};
@@ -94,6 +144,10 @@ function lss(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 function freshM(){return{v:3,st:Date.now(),ev:0,sg:0,at:0,fl:0,w:0,l:0,pl:0,ea:0,fe:0,lv:0,by:{}};}
 function ldM(){try{var r=lsg("kt_m");if(r){var m=JSON.parse(r);if(m&&m.v===3)return m;}}catch(e){}return freshM();}
 function svM(m){lss("kt_m",JSON.stringify(m));}
+function todayKey(){var d=new Date();return"kd_"+d.getFullYear()+"-"+(d.getMonth()+1)+"-"+d.getDate();}
+function ldDay(){try{var r=lsg(todayKey());return r?JSON.parse(r):{trades:0,w:0,l:0,pnl:0,lev:0};}catch(e){return{trades:0,w:0,l:0,pnl:0,lev:0};}}
+function svDay(d){lss(todayKey(),JSON.stringify(d));}
+function updDay(won,pnlCents,levCents){var d=ldDay();d.trades++;if(won)d.w++;else d.l++;d.pnl+=pnlCents;d.lev+=levCents;svDay(d);return d;}
 function mocks(){var n=Date.now(),d=function(x){return new Date(n+x*864e5).toISOString();};return[
   {ticker:"FED-RATE",title:"Fed holds rates in May?",yes_bid:68,yes_ask:72,no_bid:26,last_price:70,close_time:d(2),volume:95e3},
   {ticker:"BTC-70K",title:"BTC above $70k Friday?",yes_bid:22,yes_ask:26,no_bid:72,last_price:24,close_time:d(3),volume:21e4},
@@ -128,7 +182,9 @@ function App(){
   var _ft=useState(false),ftg=_ft[0],setFtg=_ft[1];
   var _fl=useState("all"),flt=_fl[0],setFlt=_fl[1];
   var _tr=useState([]),trades=_tr[0],setTrades=_tr[1];
-  var C={dw:14,me:0.03,kf:0.25,mx:500},traded=useRef({}),tmr=useRef(null),FE=0.07;
+  var C={dw:14,me:0.03,kf:0.25},traded=useRef({}),tmr=useRef(null),FE=0.07;
+  // Max leverage = 50% of current balance, recalculated each trade
+  function maxBet(){return Math.floor(bal*0.5);}
 
   var log=useCallback(function(m,t){setLogs(function(p){return[{t:Date.now(),msg:m,type:t||"info"}].concat(p).slice(0,200);});},[]);
 
@@ -141,16 +197,18 @@ function App(){
       else if(m.indexOf("401")>=0||m.indexOf("403")>=0)setErr("Credentials rejected.");
       else if(m.indexOf("import")>=0||m.indexOf("pkcs")>=0)setErr("Bad key format.");
       else setErr(m);setLd(false);});}
-  function goPaper(){setPaper(true);setDemo(false);setScr("dash");log("Paper trading active");}
-  function goLive(){setPaper(false);setDemo(false);setScr("dash");log("LIVE trading","warn");}
+  function goPaper(){setPaper(true);setDemo(false);setScr("dash");log("Paper trading active");if(lsg("kt_ao")==="1"){setAon(true);log("Auto-trade resuming from previous session");}}
+  function goLive(){setPaper(false);setDemo(false);setScr("dash");log("LIVE trading","warn");if(lsg("kt_ao")==="1"){setAon(true);log("Auto-trade resuming from previous session");}}
   function goDemo(){setDemo(true);setPaper(false);setBal(10000);var mk=mocks();for(var i=0;i<mk.length;i++)mk[i].signal=analyze(mk[i],C);setMkts(mk);setScr("dash");log("Demo mode");}
 
   var doFetch=useCallback(function(){
     if(demo)return Promise.resolve([]);setFtg(true);log("Fetching markets...");
-    return fetchMkts().then(function(all){log("API returned "+all.length+" markets");var sh=[];
-      for(var i=0;i<all.length;i++){var d=dtu(all[i].close_time);if(d<=0||d>C.dw)continue;all[i].signal=analyze(all[i],C);sh.push(all[i]);}
+    return fetchMkts().then(function(all){log("API returned "+all.length+" markets");var sh=[],sp=0;
+      for(var i=0;i<all.length;i++){
+        if(isSport(all[i])){sp++;continue;}
+        var d=dtu(all[i].close_time);if(d<=0||d>C.dw)continue;all[i].signal=analyze(all[i],C);sh.push(all[i]);}
       sh.sort(function(a,b){return new Date(a.close_time)-new Date(b.close_time);});setMkts(sh);
-      var sc=sh.filter(function(m){return m.signal;}).length;log(sh.length+" in window, "+sc+" signals");
+      var sc=sh.filter(function(m){return m.signal;}).length;log(sh.length+" non-sports in window ("+sp+" sports filtered), "+sc+" signals");
       setMet(function(p){var n=cx(p);n.ev+=all.length;n.sg+=sc;svM(n);return n;});setFtg(false);
       return sh;
     }).catch(function(e){log("Error: "+e.message,"error");setFtg(false);return[];});},[demo,log]);
@@ -159,14 +217,14 @@ function App(){
 
   function doTrade(m){
     if(!m.signal||est)return;if(traded.current[m.ticker]){return;}
-    var s=m.signal,days=dtu(m.close_time),sz=kelly(s.prob,s.price,C.kf,C.mx,days);if(sz<=0)return;
+    var s=m.signal,days=dtu(m.close_time),mb=maxBet(),sz=kelly(s.prob,s.price,C.kf,mb,days);if(sz<=0)return;
     var ct2=Math.max(1,Math.floor(sz/s.price)),cost=ct2*s.price;
     if(demo||paper){var res=sim(s);traded.current[m.ticker]=true;
       setMet(function(p){var n=cx(p);n.at++;if(!n.by[s.sig])n.by[s.sig]={a:0,f:0,w:0,l:0,p:0,e:0};n.by[s.sig].a++;
         if(res.filled){n.fl++;n.by[s.sig].f++;n.pl+=cost;n.lv+=cost;n.by[s.sig].p+=cost;
           if(res.won){var win=Math.round(ct2*(100-s.price)*(1-FE));n.w++;n.by[s.sig].w++;n.ea+=win;n.by[s.sig].e+=win;n.fe+=Math.round(ct2*(100-s.price)*FE);
-            setBal(function(b){return b+win;});setTrades(function(p){return[{t:Date.now(),ticker:m.ticker,title:m.title,sig:s.sig,side:s.side,ct:ct2,price:s.price,won:true,pnl:win}].concat(p).slice(0,50);});log("["+s.sig+"] WIN "+m.ticker+" +"+ct(win),"success");
-          }else{n.l++;n.by[s.sig].l++;n.ea-=cost;n.by[s.sig].e-=cost;setBal(function(b){return b-cost;});setTrades(function(p){return[{t:Date.now(),ticker:m.ticker,title:m.title,sig:s.sig,side:s.side,ct:ct2,price:s.price,won:false,pnl:-cost}].concat(p).slice(0,50);});log("["+s.sig+"] LOSS "+m.ticker+" -"+ct(cost),"error");}
+            setBal(function(b){return b+win;});updDay(true,win,cost);setTrades(function(p){return[{t:Date.now(),ticker:m.ticker,title:m.title,sig:s.sig,side:s.side,ct:ct2,price:s.price,won:true,pnl:win}].concat(p).slice(0,50);});log("["+s.sig+"] WIN "+m.ticker+" +"+ct(win),"success");
+          }else{n.l++;n.by[s.sig].l++;n.ea-=cost;n.by[s.sig].e-=cost;setBal(function(b){return b-cost;});updDay(false,-cost,cost);setTrades(function(p){return[{t:Date.now(),ticker:m.ticker,title:m.title,sig:s.sig,side:s.side,ct:ct2,price:s.price,won:false,pnl:-cost}].concat(p).slice(0,50);});log("["+s.sig+"] LOSS "+m.ticker+" -"+ct(cost),"error");}
         }else log("["+s.sig+"] "+m.ticker+" no fill","warn");svM(n);return n;});
     }else{api("/orders","POST",{ticker:m.ticker,action:"buy",side:s.side,count_fp:ct2+".00",type:"limit",
       yes_price_dollars:(s.side==="yes"?s.price/100:(100-s.price)/100).toFixed(2),time_in_force:"ioc"
@@ -177,9 +235,10 @@ function App(){
     if(!aon||est||scr!=="dash")return;
     var run=function(){doFetch().then(function(fresh){
       var sg=fresh.filter(function(m){return m.signal&&!traded.current[m.ticker];});
-      log("Auto-trade: "+sg.length+" actionable signals");
-      for(var i=0;i<Math.min(sg.length,3);i++)doTrade(sg[i]);});};
-    run();tmr.current=setInterval(run,120000);return function(){if(tmr.current)clearInterval(tmr.current);};},[aon,est,scr]);
+      sg.sort(function(a,b){return(b.signal.score||0)-(a.signal.score||0);});
+      if(sg.length>0)log("Auto-trade: "+sg.length+" signals, best: "+sg[0].ticker+" ("+sg[0].signal.sig+" score:"+Math.round(sg[0].signal.score||0)+")");
+      for(var i=0;i<Math.min(sg.length,5);i++)doTrade(sg[i]);});};
+    run();tmr.current=setInterval(run,90000);return function(){if(tmr.current)clearInterval(tmr.current);};},[aon,est,scr]);
 
   function togStop(){var n=!est;setEst(n);lss("kt_es",n?"1":"0");if(n){setAon(false);lss("kt_ao","0");log("EMERGENCY STOP","error");}else log("Released");}
 
@@ -253,7 +312,7 @@ function App(){
         ):null,
         sh.length===0?R("div",{style:{color:"#555",textAlign:"center",padding:40}},ftg?"Loading...":"No markets. Hit Refresh."):null,
         sh.slice(0,100).map(function(m){var s=m.signal,days=dtu(m.close_time),dl=days<1?Math.round(days*24)+"h":days.toFixed(1)+"d",
-          sc=s?(s.sig==="ARB"?"#00ff88":s.sig==="VOL"?"#4488ff":"#ff8844"):"#1a2230";
+          sc=s?(s.sig==="ARB"?"#00ff88":s.sig==="VOL"?"#4488ff":s.sig==="TVAL"?"#dd88ff":"#ff8844"):"#1a2230";
           return R("div",{key:m.ticker,style:{background:"#0a0f14",border:"1px solid #1a2230",borderLeft:"3px solid "+sc,borderRadius:10,padding:12,marginBottom:8}},
             R("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:4}},
               R("div",{style:{fontSize:13,fontWeight:600,color:"#e0e0e0",flex:1,lineHeight:1.3}},m.title),
@@ -273,9 +332,12 @@ function App(){
           return R("div",{key:i,style:{fontSize:11,color:c,padding:"4px 0",borderBottom:"1px solid #111",fontFamily:"monospace"}},
             R("span",{style:{color:"#444",marginRight:6}},new Date(l.t).toLocaleTimeString()),l.msg);})
       ):null,
-      tab==="metrics"?R("div",null,
+      tab==="metrics"?(function(){var day=ldDay();var maxL=Math.floor(bal*0.5);return R("div",null,
+        R("div",{style:cx(P.mc,{borderColor:"#00ff8833"})},R("div",{style:P.mt},"Today ("+new Date().toLocaleDateString()+")"),
+          mr("Trades",day.trades),mr("W / L",day.w+" / "+day.l),mr("Win Rate",pc(day.w,day.trades)),
+          mr("P&L",(day.pnl>=0?"+":"")+"$"+(day.pnl/100).toFixed(2)),mr("Leveraged","$"+(day.lev/100).toFixed(2))),
         R("div",{style:P.mc},R("div",{style:P.mt},"Financial Overview"),
-          mr("Balance",ct(bal)),mr("Total Leveraged",ct(met.lv||0)),mr("Total P&L",(pnl>=0?"+":"")+"$"+pnl.toFixed(2)),mr("Fees Paid",ct(met.fe||0)),mr("ROI",roi+"%")),
+          mr("Balance",ct(bal)),mr("Max Leverage (50%)",ct(maxL)),mr("Total Leveraged",ct(met.lv||0)),mr("Total P&L",(pnl>=0?"+":"")+"$"+pnl.toFixed(2)),mr("Fees Paid",ct(met.fe||0)),mr("ROI",roi+"%")),
         R("div",{style:P.mc},R("div",{style:P.mt},"Projections"),
           mr("Trades/Hour",tph.toFixed(1)),mr("Avg Win",met.w>0?ct(Math.round(aw)):"--"),mr("Avg Loss",met.l>0?ct(Math.round(al)):"--"),
           mr("Proj. Daily",(projD>=0?"+$":"-$")+Math.abs(projD).toFixed(2)),mr("Proj. Weekly",(projW>=0?"+$":"-$")+Math.abs(projW).toFixed(2)),
@@ -289,7 +351,7 @@ function App(){
               R("div",{style:{fontWeight:700,color:"#aaa",fontSize:12,marginBottom:4}},k),
               mr("Filled",b.f+"/"+b.a),mr("W/L",b.w+"/"+b.l),mr("P&L","$"+((b.e||0)/100).toFixed(2)));})):null,
         R("button",{style:cx(P.btn,{marginTop:16,background:"#1a1a2e",color:"#666",fontSize:11}),onClick:function(){var m=freshM();setMet(m);svM(m);}},"Reset All Metrics")
-      ):null));
+      );})():null));
 }
 var P={
   pg:{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:16,background:"#06080b"},
