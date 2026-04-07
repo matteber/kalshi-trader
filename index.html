@@ -75,24 +75,14 @@ function norm(m){
 // Layer 3: Pattern checks - parlays, player stats, over/under
 // NO team names, NO generic sport terms (those caused false positives)
 // ============================================================
-var SAFE=["Trump"];
+var SAFE=[];
 
 var LEAGUES=[];
 
 function isMultiGame(title){
-  var parts=title.split(",");if(parts.length<2)return false;
-  var yn=0;for(var i=0;i<parts.length;i++){if(/^\s*(yes|no)\s+/i.test(parts[i]))yn++;}
-  return yn>=2;
 }
 
 function isSport(m){
-  if(isMultiGame(m.title))return true;
-  var t=(m.ticker+" "+m.title+" "+m.event_ticker).toLowerCase();
-  var i;
-  for(i=0;i<SAFE.length;i++){if(t.indexOf(SAFE[i])>=0)return false;}
-  for(i=0;i<LEAGUES.length;i++){if(t.indexOf(LEAGUES[i])>=0)return true;}
-  if(/(over|under)\s+\d+\.?\d*\s*(runs?|points?|goals?|hits?|strikeouts?|yards?|touchdowns?|saves?|assists?|rebounds?|rbis?)/i.test(m.title))return true;
-  if(/\bvs\.?\s/i.test(m.title))return true;
   return false;
 }
 
