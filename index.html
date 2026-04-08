@@ -86,8 +86,8 @@ function norm(m){
 var SPORT_PREFIXES=["KXNBA","KXNFL","KXNHL","KXMLB","KXWNBA","KXNCAA","KXMMA","KXUFC","KXPGA","KXNASCAR",
   "KXEPL","KXMLS","KXTENNIS","KXCRICKET","KXSOCCER","KXSERIEA","KXBUNDESLIGA","KXLIGUE","KXCHAMPIONS",
   "KXPREMIER","KXF1","KXFIGHT","KXBOXING","KXSPORT","KXPARLAY","KXATP"];
-var SPORT_SUBS=["CROSSCATEGORY","SPORTSMULTIGAME","MULTIGAME","PARLAY","ESPORT",
-  "CHALLENGERMATCH","ATPMATCH","WTAMATCH","GRANDSLAM","SPREAD-","TOTALPOINTS",
+var SPORT_SUBS=["CROSSCATEGORY","SPORTSMULTIGAME","MULTIGAME","PARLAY",
+  "CHALLENGERMATCH","ATPMATCH","WTAMATCH","GRANDSLAM",
   "PLAYERPROPS","GAMEPROPS","MONEYLINE","OVERUNDER"];
 
 function isSport(m){
@@ -99,6 +99,17 @@ function isSport(m){
     if(tk.indexOf(SPORT_SUBS[j])>=0)return true;
   }
   return false;
+}
+// Debug version that returns which rule matched
+function isSportDebug(m){
+  var tk=(m.ticker||"").toUpperCase();
+  for(var i=0;i<SPORT_PREFIXES.length;i++){
+    if(tk.indexOf(SPORT_PREFIXES[i])===0)return"prefix:"+SPORT_PREFIXES[i];
+  }
+  for(var j=0;j<SPORT_SUBS.length;j++){
+    if(tk.indexOf(SPORT_SUBS[j])>=0)return"sub:"+SPORT_SUBS[j];
+  }
+  return null;
 }
 
 // ============================================================
@@ -142,14 +153,15 @@ var CANARY_COUNT=25;
 // MARKET FETCHING (paginated) with canary validation
 // ============================================================
 function fetchMkts(){
-  var all=[],cur="",pg=0,sportSkip=0;
+  var all=[],cur="",pg=0,sportSkip=0,debugFiltered=[];
   function go(){var qs="status=open&limit=1000";if(cur)qs+="&cursor="+encodeURIComponent(cur);
     return api("/markets?"+qs).then(function(d){var mk=d.markets||[];
     for(var i=0;i<mk.length;i++){
-      if(isSport(mk[i])){sportSkip++;continue;}
+      var reason=isSportDebug(mk[i]);
+      if(reason){sportSkip++;if(debugFiltered.length<10)debugFiltered.push((mk[i].ticker||"").slice(0,50)+"=>"+reason);continue;}
       all.push(norm(mk[i]));
     }
-    cur=d.cursor||"";pg++;if(cur&&mk.length>0&&pg<15)return go();return{markets:all,sportSkip:sportSkip};});}
+    cur=d.cursor||"";pg++;if(cur&&mk.length>0&&pg<15)return go();return{markets:all,sportSkip:sportSkip,debugFiltered:debugFiltered};});}
   return go();
 }
 
@@ -384,6 +396,11 @@ function App(){
     return fetchMkts().then(function(res){
       var all=res.markets,sportSkip=res.sportSkip;
       log("API: "+(all.length+sportSkip)+" total, "+sportSkip+" sports filtered, "+all.length+" remaining");
+
+      // Log WHY markets were filtered
+      if(res.debugFiltered&&res.debugFiltered.length>0){
+        log("FILTER DEBUG: "+res.debugFiltered.join(" | "));
+      }
 
       // Track price movements
       trackPrices(all);
