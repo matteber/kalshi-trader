@@ -85,12 +85,16 @@ function norm(m){
 // ============================================================
 var SPORT_PREFIXES=["KXNBA","KXNFL","KXNHL","KXMLB","KXWNBA","KXNCAA","KXMMA","KXUFC","KXPGA","KXNASCAR",
   "KXEPL","KXMLS","KXTENNIS","KXCRICKET","KXSOCCER","KXSERIEA","KXBUNDESLIGA","KXLIGUE","KXCHAMPIONS",
-  "KXPREMIER","KXF1","KXFIGHT","KXBOXING","CROSSCATEGORY","KXSPORT","KXPARLAY"];
+  "KXPREMIER","KXF1","KXFIGHT","KXBOXING","KXSPORT","KXPARLAY","KXMVE"];
+var SPORT_SUBS=["CROSSCATEGORY","SPORTSMULTIGAME","MULTIGAME","PARLAY","ESPORT"];
 
 function isSport(m){
   var tk=(m.ticker||"").toUpperCase();
   for(var i=0;i<SPORT_PREFIXES.length;i++){
     if(tk.indexOf(SPORT_PREFIXES[i])===0)return true;
+  }
+  for(var j=0;j<SPORT_SUBS.length;j++){
+    if(tk.indexOf(SPORT_SUBS[j])>=0)return true;
   }
   return false;
 }
@@ -403,6 +407,11 @@ function App(){
       setMkts(all);
 
       log("SCAN: "+all.length+" markets, "+sigCount+" signals");
+
+      // Sample first 10 tickers for debugging
+      var sampleTk=all.slice(0,10).map(function(m){return m.ticker;}).join(", ");
+      log("Sample tickers: "+sampleTk);
+
       var sigParts=[];
       var stk=Object.keys(sigTypes);
       for(var j=0;j<stk.length;j++){if(sigTypes[stk[j]]>0)sigParts.push(stk[j]+":"+sigTypes[stk[j]]);}
@@ -748,6 +757,13 @@ function App(){
 
       // LOG TAB
       tab==="log"?R("div",null,
+        R("button",{style:cx(P.btn,{marginBottom:10,fontSize:12,background:"#1a2230",color:"#888"}),onClick:function(){
+          var txt=logs.map(function(l){return new Date(l.t).toLocaleTimeString()+" ["+l.type+"] "+l.msg;}).join("\n");
+          navigator.clipboard.writeText(txt).then(function(){log("Log copied to clipboard","success");}).catch(function(e){
+            // fallback
+            var ta=document.createElement("textarea");ta.value=txt;document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta);log("Log copied","success");
+          });
+        }},"Copy Log"),
         logs.length===0?R("div",{style:{color:"#555",textAlign:"center",padding:40}},"No logs yet"):null,
         logs.map(function(l,i){
           var c=l.type==="error"?"#ff6b6b":l.type==="success"?"#00ff88":l.type==="warn"?"#f0a030":"#888";
