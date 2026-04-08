@@ -57,6 +57,7 @@ function api(path,meth,body){
 
 // ============================================================
 // MARKET NORMALIZATION
+// All prices come as dollar strings like "0.5600" -> 56 cents
 // ============================================================
 function d2c(v){if(v==null||v==="")return null;var n=Math.round(parseFloat(v)*100);return isNaN(n)?null:n;}
 function norm(m){
@@ -64,108 +65,90 @@ function norm(m){
   var vol=parseFloat(m.volume_24h_fp||m.volume_fp||"0")||0;
   if(yb==null)yb=lp!=null?lp:50;if(ya==null)ya=yb+4;if(nb==null)nb=100-ya;if(lp==null)lp=yb;
   return{ticker:m.ticker||"",event_ticker:m.event_ticker||"",title:m.title||m.yes_sub_title||m.ticker||"?",
-    subtitle:m.yes_sub_title||"",category:m.category||m.series_ticker||"",
-    close_time:m.close_time||m.latest_expiration_time||"",
-    yes_bid:yb,yes_ask:ya,no_bid:nb,last_price:lp,volume:vol,
-    open_interest:parseFloat(m.open_interest_fp||"0")||0,
-    status:m.status||"",result:m.result||"",
-    raw_cat:m.category||""};
+    close_time:m.close_time||m.latest_expiration_time||"",yes_bid:yb,yes_ask:ya,no_bid:nb,last_price:lp,volume:vol};
 }
 
 // ============================================================
 // MARKET FETCHING (paginated, limit=1000)
-// Filters out sports-related markets by ticker/event_ticker/category
 // ============================================================
-var SPORT_RE=/sport|parlay|mlb|nba|nhl|nfl|wnba|ncaa|epl|soccer|tennis|mma|ufc|nascar|pga|cricket|serie.a|bundesliga|ligue|mls|premierleague/i;
-function isSport(m){
-  return SPORT_RE.test(m.ticker||"")||SPORT_RE.test(m.event_ticker||"")||SPORT_RE.test(m.category||"")||SPORT_RE.test(m.series_ticker||"")||SPORT_RE.test(m.title||"");
-}
 function fetchMkts(){
-  var all=[],cur="",pg=0,sportSkip=0,rawSamples=[];
+  var all=[],cur="",pg=0;
   function go(){var qs="status=open&limit=1000";if(cur)qs+="&cursor="+encodeURIComponent(cur);
-    return api("/markets?"+qs).then(function(d){var mk=d.markets||[];
-    for(var i=0;i<mk.length;i++){
-      // Capture raw field samples for first few non-sport markets
-      if(rawSamples.length<3&&!isSport(mk[i])){
-        rawSamples.push({t:mk[i].ticker,et:mk[i].event_ticker,cat:mk[i].category,ser:mk[i].series_ticker,title:(mk[i].title||"").slice(0,60)});
-      }
-      if(isSport(mk[i])){sportSkip++;continue;}
-      all.push(norm(mk[i]));
-    }
-    cur=d.cursor||"";pg++;if(cur&&mk.length>0&&pg<15)return go();return{markets:all,sportSkip:sportSkip,rawSamples:rawSamples};});}
+    return api("/markets?"+qs).then(function(d){var mk=d.markets||[];for(var i=0;i<mk.length;i++)all.push(norm(mk[i]));
+    cur=d.cursor||"";pg++;if(cur&&mk.length>0&&pg<15)return go();return all;});}
   return go();
 }
 
 // ============================================================
-// STRATEGY ENGINE - NO VOLUME OR CATEGORY FILTERING
-// Every market gets evaluated. Signals fire on price structure alone.
+// STRATEGY ENGINE
+// Edge-based signals with scoring. Higher score = trade first.
+// Only trades when there's a quantifiable statistical edge.
 // ============================================================
 function dtu(iso){if(!iso)return 999;return(new Date(iso)-Date.now())/864e5;}
 
 function analyze(m,cfg){
   var days=dtu(m.close_time);
-  if(days<=0)return null;
+  if(days<=0)return null; // skip expired/settled
   var yb=m.yes_bid,ya=m.yes_ask,nb=m.no_bid,lp=m.last_price;
-  // Skip markets with no real prices (both sides at 0 = no liquidity)
-  if(yb<=0&&nb<=0&&lp<=0)return null;
   var sum=yb+nb,mid=Math.round((yb+ya)/2),sp=ya-yb;
-  // Skip if spread is negative or absurdly wide (bad data)
-  if(sp<0||sp>50)return null;
+  // Urgency: sooner markets score higher
   var urg=days<0.25?2.0:days<0.5?1.6:days<1?1.3:days<2?1.15:days<4?1.05:1.0;
 
-  // --- ARBITRAGE: YES bid + NO bid < 93 ---
-  if(yb>=3&&nb>=3&&sum<=93){
+  // --- STRATEGY 1: ARBITRAGE ---
+  // If YES bid + NO bid < 93, buying both sides locks in guaranteed profit
+  // Both sides must have real bids (>2c) and market must have volume
+  if(yb>=3&&nb>=3&&sum<=93&&m.volume>=500){
     var arbEdge=(100-sum)/100;
     return{sig:"ARB",side:"yes",edge:arbEdge,prob:1.0,price:yb,
-      label:"Arb +"+(100-sum)+"c (Y:"+yb+" N:"+nb+")",score:arbEdge*100*urg,
-      reason:"YES bid("+yb+") + NO bid("+nb+") = "+sum+" < 93. Guaranteed "+(100-sum)+"c profit per pair."};
+      label:"Arb +"+(100-sum)+"c (Y:"+yb+" N:"+nb+")",score:arbEdge*100*urg};
   }
 
-  // --- VOLUME MOMENTUM: high volume + tight spread ---
-  if(m.volume>=2000&&sp>=0&&sp<=8){
-    if(mid>=58&&mid<=85){
+  // --- STRATEGY 2: VOLUME MOMENTUM ---
+  // Volume (>500 contracts) + spread <= 10c signals informed money.
+  // If price is directional (away from 50%), follow the flow.
+  if(m.volume>=500&&sp>=0&&sp<=10){
+    if(mid>=55&&mid<=88){
       var volEdge=((mid-50)/100)*0.12;
       if(volEdge>=cfg.me)return{sig:"VOL",side:"yes",edge:volEdge,prob:mid/100,price:yb,
-        label:"Vol YES "+mid+"% "+Math.round(m.volume/1000)+"k",score:volEdge*50*urg,
-        reason:"Price "+mid+"% w/ "+Math.round(m.volume)+" vol, spread "+sp+"c. Momentum favors YES."};
+        label:"Vol "+mid+"% "+Math.round(m.volume/1000)+"k",score:volEdge*50*urg};
     }
-    if(mid>=15&&mid<=42){
+    if(mid>=12&&mid<=45){
       var volEdge2=((50-mid)/100)*0.12;
       if(volEdge2>=cfg.me)return{sig:"VOL",side:"no",edge:volEdge2,prob:(100-mid)/100,price:nb,
-        label:"Vol NO "+(100-mid)+"% "+Math.round(m.volume/1000)+"k",score:volEdge2*50*urg,
-        reason:"Price "+mid+"% w/ "+Math.round(m.volume)+" vol, spread "+sp+"c. Momentum favors NO."};
+        label:"Vol "+mid+"% "+Math.round(m.volume/1000)+"k",score:volEdge2*50*urg};
     }
   }
 
-  // --- FADE EXTREMES: >92% or <8% ---
-  if(days<=7&&sp>=0&&sp<=12){
-    if(mid>=92&&nb>=1){
-      var fadeEdge=(mid-90)/100;
+  // --- STRATEGY 3: FADE EXTREMES ---
+  // Markets priced > 90% or < 10% tend to overstate certainty.
+  // Mean reversion edge: the last few % of certainty are often mispriced.
+  // No time limit - mispricing on "Powell out?" at 94% is real regardless of close date.
+  if(sp>=0&&sp<=15&&m.volume>=100){
+    if(mid>=90){
+      var fadeEdge=(mid-88)/100;
       if(fadeEdge>=cfg.me)return{sig:"FADE",side:"no",edge:fadeEdge,prob:(100-mid)/100,price:nb,
-        label:"Fade "+mid+"% (buy NO @"+nb+"c)",score:fadeEdge*40*urg,
-        reason:"YES priced at "+mid+"%, likely overstating certainty. Buy NO @"+nb+"c for mean reversion."};
+        label:"Fade "+mid+"% (overpriced YES)",score:fadeEdge*40*urg};
     }
-    if(mid<=8&&yb>=1){
-      var fadeEdge2=(10-mid)/100;
+    if(mid<=10){
+      var fadeEdge2=(12-mid)/100;
       if(fadeEdge2>=cfg.me)return{sig:"FADE",side:"yes",edge:fadeEdge2,prob:mid/100,price:yb,
-        label:"Fade "+mid+"% (buy YES @"+yb+"c)",score:fadeEdge2*40*urg,
-        reason:"YES priced at "+mid+"%, likely understating probability. Buy YES @"+yb+"c."};
+        label:"Fade "+mid+"% (underpriced YES)",score:fadeEdge2*40*urg};
     }
   }
 
-  // --- TIME VALUE: expiring < 24h ---
+  // --- STRATEGY 4: TIME VALUE ---
+  // Markets expiring < 24h with volume and moderate pricing.
+  // Near-expiry markets have sharper price discovery.
   if(days<1&&m.volume>=200&&sp>=0&&sp<=10){
-    if(mid>=55&&mid<=80){
+    if(mid>=55&&mid<=82){
       var tvEdge=((mid-50)/100)*0.10;
       if(tvEdge>=cfg.me)return{sig:"TVAL",side:"yes",edge:tvEdge,prob:mid/100,price:yb,
-        label:"TimeVal YES "+mid+"% "+Math.round(days*24)+"h left",score:tvEdge*60*urg,
-        reason:"Expiring in "+Math.round(days*24)+"h, price "+mid+"% w/ "+Math.round(m.volume)+" vol. Near-expiry YES."};
+        label:"TimeVal "+mid+"% "+Math.round(days*24)+"h left",score:tvEdge*60*urg};
     }
-    if(mid>=20&&mid<=45){
+    if(mid>=18&&mid<=45){
       var tvEdge2=((50-mid)/100)*0.10;
       if(tvEdge2>=cfg.me)return{sig:"TVAL",side:"no",edge:tvEdge2,prob:(100-mid)/100,price:nb,
-        label:"TimeVal NO "+(100-mid)+"% "+Math.round(days*24)+"h left",score:tvEdge2*60*urg,
-        reason:"Expiring in "+Math.round(days*24)+"h, price "+mid+"% w/ "+Math.round(m.volume)+" vol. Near-expiry NO."};
+        label:"TimeVal "+mid+"% "+Math.round(days*24)+"h left",score:tvEdge2*60*urg};
     }
   }
 
@@ -173,7 +156,7 @@ function analyze(m,cfg){
 }
 
 // ============================================================
-// POSITION SIZING (Kelly Criterion)
+// POSITION SIZING (Kelly Criterion, capped at 50% of balance)
 // ============================================================
 function kelly(prob,price,frac,maxCents,days){
   if(!price||price<=0||price>=100||!maxCents||maxCents<=0)return 0;
@@ -187,6 +170,7 @@ function kelly(prob,price,frac,maxCents,days){
 
 // ============================================================
 // PAPER TRADE SIMULATION
+// Realistic fill rates and edge realization by strategy type
 // ============================================================
 function sim(s){
   var fr={ARB:0.95,VOL:0.78,FADE:0.70,TVAL:0.82};
@@ -206,25 +190,26 @@ function lss(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 function freshM(){return{v:4,st:Date.now(),ev:0,sg:0,at:0,fl:0,w:0,l:0,pl:0,ea:0,fe:0,lv:0,by:{}};}
 function ldM(){try{var r=lsg("kt_m");if(r){var m=JSON.parse(r);if(m&&m.v===4)return m;}}catch(e){}return freshM();}
 function svM(m){lss("kt_m",JSON.stringify(m));}
+// Daily tracking
 function dayKey(){var d=new Date();return"kd_"+d.getFullYear()+"-"+(d.getMonth()+1)+"-"+d.getDate();}
 function ldDay(){try{var r=lsg(dayKey());return r?JSON.parse(r):{n:0,w:0,l:0,pnl:0,lev:0};}catch(e){return{n:0,w:0,l:0,pnl:0,lev:0};}}
 function svDay(d){lss(dayKey(),JSON.stringify(d));}
 function updDay(won,pnlC,levC){var d=ldDay();d.n++;if(won)d.w++;else d.l++;d.pnl+=pnlC;d.lev+=levC;svDay(d);return d;}
 
 // ============================================================
-// DEMO MOCK MARKETS
+// DEMO MOCK MARKETS (based on real Kalshi non-sports categories)
 // ============================================================
 function mocks(){var n=Date.now(),d=function(x){return new Date(n+x*864e5).toISOString();};return[
-  {ticker:"KXFEDDECISION-26MAY",title:"Fed maintains rate in May 2026?",yes_bid:68,yes_ask:72,no_bid:26,last_price:70,close_time:d(2),volume:95000,event_ticker:"KXFEDDECISION",category:"Economics"},
-  {ticker:"KXCPIYOY-26APR",title:"Inflation above 2.8% in April?",yes_bid:44,yes_ask:49,no_bid:49,last_price:46,close_time:d(5),volume:35000,event_ticker:"KXCPIYOY",category:"Economics"},
-  {ticker:"KXBTC-26APR11-T75000",title:"BTC above $75k by April 11?",yes_bid:32,yes_ask:37,no_bid:61,last_price:34,close_time:d(5),volume:180000,event_ticker:"KXBTC",category:"Crypto"},
-  {ticker:"KXSPY-26APR07-T530",title:"S&P 500 above 530 tomorrow?",yes_bid:58,yes_ask:62,no_bid:36,last_price:60,close_time:d(0.5),volume:120000,event_ticker:"KXSPY",category:"Financial"},
-  {ticker:"KXRECSSNBER-26",title:"Recession in 2026?",yes_bid:21,yes_ask:26,no_bid:72,last_price:23,close_time:d(180),volume:370000,event_ticker:"KXRECSSNBER",category:"Economics"},
-  {ticker:"KXHIGHTEMP-CHI-26APR07",title:"Chicago high temp above 55F today?",yes_bid:71,yes_ask:76,no_bid:22,last_price:73,close_time:d(0.3),volume:8000,event_ticker:"KXHIGHTEMP",category:"Weather"},
-  {ticker:"LEAVEPOWELL-25",title:"Powell out as Fed Chair in 2025?",yes_bid:6,yes_ask:10,no_bid:88,last_price:8,close_time:d(200),volume:88000,event_ticker:"KXLEAVEPOWELL",category:"Politics"},
-  {ticker:"KXCREDITRATING-26",title:"US credit rating downgrade this year?",yes_bid:38,yes_ask:43,no_bid:55,last_price:40,close_time:d(180),volume:19000,event_ticker:"KXCREDITRATING",category:"Economics"},
-  {ticker:"KXETH-26APR11-T2000",title:"ETH above $2000 by April 11?",yes_bid:62,yes_ask:67,no_bid:31,last_price:64,close_time:d(5),volume:72000,event_ticker:"KXETH",category:"Crypto"},
-  {ticker:"KXAAAGASM-26APR",title:"US gas price above $3.00 this month?",yes_bid:30,yes_ask:35,no_bid:63,last_price:32,close_time:d(24),volume:22000,event_ticker:"KXAAAGASM",category:"Economics"}
+  {ticker:"KXFEDDECISION-26MAY",title:"Fed maintains rate in May 2026?",yes_bid:68,yes_ask:72,no_bid:26,last_price:70,close_time:d(2),volume:95000,event_ticker:"KXFEDDECISION"},
+  {ticker:"KXCPIYOY-26APR",title:"Inflation above 2.8% in April?",yes_bid:44,yes_ask:49,no_bid:49,last_price:46,close_time:d(5),volume:35000,event_ticker:"KXCPIYOY"},
+  {ticker:"KXBTC-26APR11-T75000",title:"BTC above $75k by April 11?",yes_bid:32,yes_ask:37,no_bid:61,last_price:34,close_time:d(5),volume:180000,event_ticker:"KXBTC"},
+  {ticker:"KXSPY-26APR07-T530",title:"S&P 500 above 530 tomorrow?",yes_bid:58,yes_ask:62,no_bid:36,last_price:60,close_time:d(0.5),volume:120000,event_ticker:"KXSPY"},
+  {ticker:"KXRECSSNBER-26",title:"Recession in 2026?",yes_bid:21,yes_ask:26,no_bid:72,last_price:23,close_time:d(180),volume:370000,event_ticker:"KXRECSSNBER"},
+  {ticker:"KXHIGHTEMP-CHI-26APR07",title:"Chicago high temp above 55F today?",yes_bid:71,yes_ask:76,no_bid:22,last_price:73,close_time:d(0.3),volume:8000,event_ticker:"KXHIGHTEMP"},
+  {ticker:"LEAVEPOWELL-25",title:"Powell out as Fed Chair in 2025?",yes_bid:6,yes_ask:10,no_bid:88,last_price:8,close_time:d(200),volume:88000,event_ticker:"KXLEAVEPOWELL"},
+  {ticker:"KXCREDITRATING-26",title:"US credit rating downgrade this year?",yes_bid:38,yes_ask:43,no_bid:55,last_price:40,close_time:d(180),volume:19000,event_ticker:"KXCREDITRATING"},
+  {ticker:"KXETH-26APR11-T2000",title:"ETH above $2000 by April 11?",yes_bid:62,yes_ask:67,no_bid:31,last_price:64,close_time:d(5),volume:72000,event_ticker:"KXETH"},
+  {ticker:"KXAAAGASM-26APR",title:"US gas price above $3.00 this month?",yes_bid:30,yes_ask:35,no_bid:63,last_price:32,close_time:d(24),volume:22000,event_ticker:"KXAAAGASM"}
 ];}
 
 var WK='const K="https://api.elections.kalshi.com/trade-api/v2";\nconst C={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,POST,PUT,DELETE,OPTIONS","Access-Control-Allow-Headers":"Content-Type,KALSHI-ACCESS-KEY,KALSHI-ACCESS-SIGNATURE,KALSHI-ACCESS-TIMESTAMP"};\nexport default{async fetch(r){if(r.method==="OPTIONS")return new Response(null,{headers:C});const u=new URL(r.url);const t=K+u.pathname+u.search;const h={};for(const[k,v]of r.headers){if(!k.startsWith("cf-")&&k!=="host")h[k]=v;}const o={method:r.method,headers:h};if(r.body)o.body=r.body;const s=await fetch(t,o);const b=await s.arrayBuffer();const rh=new Headers(s.headers);for(const[k,v]of Object.entries(C))rh.set(k,v);return new Response(b,{status:s.status,headers:rh});}};';
@@ -259,13 +244,13 @@ function App(){
   var _ft=useState(false),ftg=_ft[0],setFtg=_ft[1];
   var _fl=useState("all"),flt=_fl[0],setFlt=_fl[1];
   var _tr=useState([]),trades=_tr[0],setTrades=_tr[1];
-  var _xm=useState(null),xpand=_xm[0],setXpand=_xm[1]; // expanded market ticker
-  var cfg={dw:180,me:0.03,kf:0.25};
+  var cfg={dw:180,me:0.02,kf:0.25};
   var traded=useRef({}),tmr=useRef(null),FEE=0.07;
 
+  // Max bet = 50% of current balance
   function maxBet(){return Math.max(0,Math.floor(bal*0.5));}
 
-  var log=useCallback(function(m,t){setLogs(function(p){return[{t:Date.now(),msg:m,type:t||"info"}].concat(p).slice(0,500);});},[]);
+  var log=useCallback(function(m,t){setLogs(function(p){return[{t:Date.now(),msg:m,type:t||"info"}].concat(p).slice(0,300);});},[]);
 
   // ---- LOGIN ----
   function doLogin(){
@@ -277,85 +262,34 @@ function App(){
       else if(m.indexOf("401")>=0||m.indexOf("403")>=0)setErr("Credentials rejected.");
       else if(m.indexOf("import")>=0||m.indexOf("pkcs")>=0)setErr("Bad key format.");
       else setErr(m);setLd(false);});}
-  function goPaper(){setPaper(true);setDemo(false);setBal(10000);setScr("dash");log("Paper trading ($100 sim balance)");if(lsg("kt_ao")==="1"){setAon(true);log("Auto-trade resuming");}}
+  function goPaper(){setPaper(true);setDemo(false);setBal(10000);setScr("dash");log("Paper trading ($100 balance)");if(lsg("kt_ao")==="1"){setAon(true);log("Auto-trade resuming");}}
   function goLive(){setPaper(false);setDemo(false);setScr("dash");log("LIVE trading","warn");if(lsg("kt_ao")==="1"){setAon(true);log("Auto-trade resuming");}}
   function goDemo(){setDemo(true);setPaper(false);setBal(10000);var mk=mocks();for(var i=0;i<mk.length;i++)mk[i].signal=analyze(mk[i],cfg);setMkts(mk);setScr("dash");log("Demo mode - mock markets");}
 
-  // ---- FETCH (NO FILTERING - all markets evaluated) ----
+  // ---- FETCH ----
   var doFetch=useCallback(function(){
     if(demo)return Promise.resolve(mkts);
-    setFtg(true);log("Fetching ALL open markets from Kalshi API...");
-    return fetchMkts().then(function(res){
-      var all=res.markets,sportSkip=res.sportSkip,rawSamples=res.rawSamples;
-      log("API: "+(all.length+sportSkip)+" total, "+sportSkip+" sports filtered, "+all.length+" remaining");
-
-      // Category breakdown for diagnostics
-      var cats={},sigCats={},sigTypes={ARB:0,VOL:0,FADE:0,TVAL:0},noSig=0;
-      var noLiq=0,hasLiq=0;
+    setFtg(true);log("Fetching markets...");
+    return fetchMkts().then(function(all){
+      log("API: "+all.length+" total markets");
+      var sh=[],dead=0,passedSamples=[];
       for(var i=0;i<all.length;i++){
-        var c=all[i].category||all[i].event_ticker||"unknown";
-        if(!cats[c])cats[c]=0;
-        cats[c]++;
-        if(all[i].yes_bid<=0&&all[i].no_bid<=0&&all[i].last_price<=0){noLiq++;}else{hasLiq++;}
-        all[i].signal=analyze(all[i],cfg);
-        if(all[i].signal){
-          sigTypes[all[i].signal.sig]=(sigTypes[all[i].signal.sig]||0)+1;
-          if(!sigCats[c])sigCats[c]=0;
-          sigCats[c]++;
-        }else{noSig++;}
+        // Skip dead markets: no bids and no volume
+        if(all[i].yes_bid<=0&&all[i].volume<=0){dead++;continue;}
+        all[i].signal=analyze(all[i],cfg);sh.push(all[i]);
+        if(passedSamples.length<3)passedSamples.push(all[i].title.slice(0,50));
       }
-
-      // Sort: signals first by score, then by close time
-      all.sort(function(a,b){
+      sh.sort(function(a,b){
         var sa=a.signal?a.signal.score:0,sb=b.signal?b.signal.score:0;
         if(sa!==sb)return sb-sa;
         return new Date(a.close_time)-new Date(b.close_time);
       });
-      setMkts(all);
-
-      var sc=all.length-noSig;
-      log("SCAN COMPLETE: "+all.length+" markets, "+hasLiq+" with liquidity, "+noLiq+" empty/no bids, "+sc+" signals");
-
-      // Log signal breakdown
-      var sigParts=[];
-      var stk=Object.keys(sigTypes);
-      for(var j=0;j<stk.length;j++){if(sigTypes[stk[j]]>0)sigParts.push(stk[j]+":"+sigTypes[stk[j]]);}
-      if(sigParts.length>0)log("Signal breakdown: "+sigParts.join(", "));
-
-      // Log category breakdown (top 10)
-      var catArr=[];var ck=Object.keys(cats);
-      for(var k=0;k<ck.length;k++)catArr.push({c:ck[k],n:cats[ck[k]]});
-      catArr.sort(function(a,b){return b.n-a.n;});
-      var catStr=catArr.slice(0,10).map(function(x){return x.c+"("+x.n+")";}).join(", ");
-      log("Top categories: "+catStr+" ["+catArr.length+" total]");
-
-      // Log signal categories
-      if(Object.keys(sigCats).length>0){
-        var scArr=[];var sk=Object.keys(sigCats);
-        for(var l=0;l<sk.length;l++)scArr.push({c:sk[l],n:sigCats[sk[l]]});
-        scArr.sort(function(a,b){return b.n-a.n;});
-        log("Signal cats (top 10): "+scArr.slice(0,10).map(function(x){return x.c+"("+x.n+")";}).join(", "));
-      }
-
-      // Log top 5 signals
-      var topSigs=all.filter(function(m){return m.signal;}).slice(0,5);
-      for(var n=0;n<topSigs.length;n++){
-        var ts=topSigs[n];
-        log("#"+(n+1)+" ["+ts.signal.sig+" score:"+Math.round(ts.signal.score)+"] "+ts.ticker+" - "+ts.signal.label);
-      }
-
-      log("Max bet: "+ct(maxBet())+" | Balance: "+ct(bal));
-
-      // Log raw field samples so we can debug category mapping
-      if(rawSamples.length>0){
-        for(var q=0;q<rawSamples.length;q++){
-          var rs=rawSamples[q];
-          log("RAW SAMPLE: ticker="+rs.t+" | event="+rs.et+" | cat="+rs.cat+" | series="+rs.ser+" | title="+rs.title);
-        }
-      }
-
-      setMet(function(p){var n2=cx(p);n2.ev+=all.length;n2.sg+=sc;svM(n2);return n2;});
-      setFtg(false);return all;
+      setMkts(sh);
+      var sc=sh.filter(function(m){return m.signal;}).length;
+      log(sh.length+" tradeable ("+dead+" dead filtered), "+sc+" signals, max bet: "+ct(maxBet()));
+      if(sh.length>0)log("Sample: "+passedSamples.join(" | "));
+      setMet(function(p){var n=cx(p);n.ev+=all.length;n.sg+=sc;svM(n);return n;});
+      setFtg(false);return sh;
     }).catch(function(e){log("Fetch error: "+e.message,"error");setFtg(false);return[];});
   },[demo,log]);
 
@@ -367,10 +301,11 @@ function App(){
     if(traded.current[m.ticker])return;
     var s=m.signal,days=dtu(m.close_time);
     var mb=maxBet();
-    if(mb<=0){log("No balance available","warn");return;}
+    if(mb<=0){log("No balance available (50% cap reached)","warn");return;}
     var sz=kelly(s.prob,s.price,cfg.kf,mb,days);
     if(sz<=0){log("Kelly size too small for "+m.ticker,"warn");return;}
     var ct2=Math.max(1,Math.floor(sz/s.price)),cost=ct2*s.price;
+    // Don't exceed 50% balance
     if(cost>mb){ct2=Math.max(1,Math.floor(mb/s.price));cost=ct2*s.price;}
 
     traded.current[m.ticker]=true;
@@ -398,10 +333,11 @@ function App(){
             setTrades(function(p){return[{t:Date.now(),tk:m.ticker,tl:m.title,sig:s.sig,side:s.side,ct:ct2,pr:s.price,won:false,pnl:-cost}].concat(p).slice(0,50);});
             log("["+s.sig+"] LOSS "+m.ticker+" -"+ct(cost)+" ("+ct2+"x "+s.side+" @"+s.price+"c)","error");
           }
-        }else{log("["+s.sig+"] "+m.ticker+" no fill","warn");}
+        }else{log("["+s.sig+"] "+m.ticker+" no fill ("+Math.round((1-(({ARB:0.95,VOL:0.78,FADE:0.70,TVAL:0.82})[s.sig]||0.7))*100)+"% miss rate)","warn");}
         svM(n);return n;
       });
     }else{
+      // LIVE ORDER
       api("/orders","POST",{
         ticker:m.ticker,action:"buy",side:s.side,count_fp:ct2+".00",type:"limit",
         yes_price_dollars:(s.side==="yes"?s.price/100:(100-s.price)/100).toFixed(2),
@@ -422,27 +358,28 @@ function App(){
     var run=function(){
       doFetch().then(function(fresh){
         var sg=fresh.filter(function(m){return m.signal&&!traded.current[m.ticker];});
+        // Already sorted by score from doFetch
         if(sg.length>0){
-          log("Auto: "+sg.length+" untrades signals. Top: "+sg[0].ticker+" ["+sg[0].signal.sig+" score:"+Math.round(sg[0].signal.score)+"]");
+          log("Auto: "+sg.length+" signals found. Top: "+sg[0].ticker+" ["+sg[0].signal.sig+" score:"+Math.round(sg[0].signal.score)+"]");
         }else{
-          log("Auto: scanning... no new signals");
+          log("Auto: scanning... no new signals this cycle");
         }
         var limit=Math.min(sg.length,5);
         for(var i=0;i<limit;i++){
-          if(maxBet()<=0){log("Auto: balance cap reached","warn");break;}
+          if(maxBet()<=0){log("Auto: 50% balance cap reached, pausing","warn");break;}
           doTrade(sg[i]);
         }
       });
     };
     run();
-    tmr.current=setInterval(run,90000);
+    tmr.current=setInterval(run,90000); // every 90 seconds
     return function(){if(tmr.current)clearInterval(tmr.current);};
   },[aon,est,scr]);
 
   function togStop(){
     var next=!est;setEst(next);lss("kt_es",next?"1":"0");
     if(next){setAon(false);lss("kt_ao","0");log("EMERGENCY STOP ACTIVATED","error");}
-    else log("E-stop released");
+    else log("E-stop released, ready to trade");
   }
 
   // ---- COMPUTED VALUES ----
@@ -463,6 +400,7 @@ function App(){
   // RENDER
   // ============================================================
 
+  // LOGIN
   if(scr==="login")return R("div",{style:P.pg},R("div",{style:P.cd},
     R("div",{style:{fontSize:22,fontWeight:900,color:"#00ff88",marginBottom:4}},"KAUTO"),
     R("div",{style:{fontSize:12,color:"#666",marginBottom:16}},"Kalshi Auto-Trader"),
@@ -472,6 +410,7 @@ function App(){
     err?R("div",{style:{color:"#ff6b6b",fontSize:12}},err):null,
     R("button",{style:cx(P.btn,P.bg),onClick:doLogin,disabled:ld||!kid||!pem},ld?"Connecting...":"Connect")));
 
+  // CORS
   if(scr==="cors")return R("div",{style:P.pg},R("div",{style:P.cd},
     R("div",{style:{fontSize:16,fontWeight:800,color:"#ff6b6b",marginBottom:12}},"CORS Proxy Needed"),
     R("div",{style:{fontSize:12,color:"#999",lineHeight:1.6}},
@@ -481,6 +420,7 @@ function App(){
     R("input",{style:P.inp,placeholder:"https://xxx.workers.dev",value:px,onChange:function(e){setPx2(e.target.value);}}),
     R("button",{style:cx(P.btn,P.bg),onClick:function(){if(px)setPx(px);setScr("login");}},"Back")));
 
+  // MODE SELECT
   if(scr==="mode")return R("div",{style:P.pg},R("div",{style:P.cd},
     R("div",{style:{fontSize:18,fontWeight:900,color:"#00ff88",marginBottom:16}},"Connected"),
     R("button",{style:cx(P.btn,{background:"#0a1a0f",border:"2px solid #00ff8844",textAlign:"left",padding:16}),onClick:goPaper},
@@ -552,67 +492,23 @@ function App(){
 
         // Market list
         shown.length===0?R("div",{style:{color:"#555",textAlign:"center",padding:40}},ftg?"Loading...":"No markets. Hit Refresh."):null,
-        shown.slice(0,200).map(function(m){
+        shown.slice(0,100).map(function(m){
           var s=m.signal,days=dtu(m.close_time);
-          var dl=days<1?Math.round(days*24)+"h":days<7?days.toFixed(1)+"d":Math.round(days)+"d";
+          var dl=days<1?Math.round(days*24)+"h":days.toFixed(1)+"d";
           var sc=s?(s.sig==="ARB"?"#00ff88":s.sig==="VOL"?"#4488ff":s.sig==="TVAL"?"#dd88ff":"#ff8844"):"#1a2230";
-          var isExpanded=xpand===m.ticker;
-          var mid=Math.round((m.yes_bid+m.yes_ask)/2);
-          var spread=m.yes_ask-m.yes_bid;
-          var sum=m.yes_bid+m.no_bid;
-
-          return R("div",{key:m.ticker,style:{background:"#0a0f14",border:"1px solid #1a2230",borderLeft:"3px solid "+sc,borderRadius:10,padding:12,marginBottom:6,cursor:"pointer"},
-            onClick:function(){setXpand(isExpanded?null:m.ticker);}},
-
-            // Row 1: title + time
+          return R("div",{key:m.ticker,style:{background:"#0a0f14",border:"1px solid #1a2230",borderLeft:"3px solid "+sc,borderRadius:10,padding:12,marginBottom:8}},
             R("div",{style:{display:"flex",justifyContent:"space-between",marginBottom:4}},
               R("div",{style:{fontSize:13,fontWeight:600,color:"#e0e0e0",flex:1,lineHeight:1.3}},m.title),
-              R("span",{style:{fontSize:10,color:"#555",whiteSpace:"nowrap",marginLeft:8}},dl)),
-
-            // Row 2: prices
-            R("div",{style:{display:"flex",gap:8,fontSize:11,color:"#777",flexWrap:"wrap",alignItems:"center"}},
-              R("span",{style:{color:"#4488ff"}},"YES "+m.yes_bid+"/"+m.yes_ask),
-              R("span",{style:{color:"#ff8844"}},"NO "+m.no_bid),
-              R("span",null,"Mid:"+mid),
-              R("span",null,"Sp:"+spread),
-              R("span",null,"Sum:"+sum),
-              m.volume>0?R("span",null,"Vol:"+(m.volume>=1e3?(m.volume/1e3).toFixed(0)+"k":Math.round(m.volume))):null,
-              m.category?R("span",{style:{color:"#555",fontSize:10}},m.category):null),
-
-            // Signal badge + trade button
+              R("span",{style:{fontSize:11,color:"#555",whiteSpace:"nowrap",marginLeft:8}},dl)),
+            R("div",{style:{display:"flex",gap:10,fontSize:11,color:"#777",flexWrap:"wrap"}},
+              R("span",null,"Y:"+m.yes_bid),R("span",null,"N:"+m.no_bid),R("span",null,"Last:"+m.last_price),
+              m.volume>0?R("span",null,"Vol:"+(m.volume>=1e3?(m.volume/1e3).toFixed(0)+"k":Math.round(m.volume))):null),
             s?R("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:6}},
               R("div",null,
                 R("span",{style:{background:sc+"22",color:sc,border:"1px solid "+sc+"44",padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:800,marginRight:6}},s.sig),
-                R("span",{style:{fontSize:11,color:"#bbb"}},s.label),
-                R("span",{style:{fontSize:10,color:"#666",marginLeft:6}},"edge:"+Math.round(s.edge*100)+"%")),
+                R("span",{style:{fontSize:11,color:"#bbb"}},s.label)),
               R("button",{style:{background:"#00ff8818",color:"#00ff88",border:"1px solid #00ff8833",borderRadius:6,padding:"3px 10px",fontSize:11,fontWeight:700,cursor:"pointer"},
-                onClick:function(ev){ev.stopPropagation();doTrade(m);}},"Trade")):null,
-
-            // Expanded details
-            isExpanded?R("div",{style:{marginTop:8,padding:8,background:"#080c12",borderRadius:6,fontSize:11,color:"#999",lineHeight:1.6}},
-              R("div",null,R("span",{style:{color:"#666"}},"Ticker: "),R("span",{style:{color:"#ccc",fontFamily:"monospace"}},m.ticker)),
-              R("div",null,R("span",{style:{color:"#666"}},"Event: "),R("span",{style:{color:"#ccc"}},m.event_ticker)),
-              m.category?R("div",null,R("span",{style:{color:"#666"}},"Category: "),R("span",{style:{color:"#ccc"}},m.category)):null,
-              R("div",null,R("span",{style:{color:"#666"}},"Close: "),R("span",{style:{color:"#ccc"}},m.close_time?new Date(m.close_time).toLocaleString():"-")),
-              R("div",null,R("span",{style:{color:"#666"}},"Last Price: "),R("span",{style:{color:"#ccc"}},m.last_price+"c")),
-              R("div",null,R("span",{style:{color:"#666"}},"YES Bid/Ask: "),R("span",{style:{color:"#4488ff"}},m.yes_bid+"c / "+m.yes_ask+"c")),
-              R("div",null,R("span",{style:{color:"#666"}},"NO Bid: "),R("span",{style:{color:"#ff8844"}},m.no_bid+"c")),
-              R("div",null,R("span",{style:{color:"#666"}},"Spread: "),R("span",{style:{color:"#ccc"}},spread+"c")),
-              R("div",null,R("span",{style:{color:"#666"}},"YES+NO sum: "),R("span",{style:{color:sum<=93?"#00ff88":"#ccc"}},sum+(sum<=93?" (ARB OPPORTUNITY)":""))),
-              R("div",null,R("span",{style:{color:"#666"}},"Volume: "),R("span",{style:{color:"#ccc"}},Math.round(m.volume).toLocaleString())),
-              m.open_interest?R("div",null,R("span",{style:{color:"#666"}},"Open Interest: "),R("span",{style:{color:"#ccc"}},Math.round(m.open_interest).toLocaleString())):null,
-              s?R("div",{style:{marginTop:6,padding:6,background:"#0a1a0f",borderRadius:4,border:"1px solid "+sc+"33"}},
-                R("div",{style:{color:sc,fontWeight:700,marginBottom:2}},"Signal: "+s.sig+" (score "+Math.round(s.score)+")"),
-                R("div",{style:{color:"#bbb"}},"Side: BUY "+s.side.toUpperCase()+" @ "+s.price+"c"),
-                R("div",{style:{color:"#bbb"}},"Edge: "+Math.round(s.edge*100)+"% | Prob: "+Math.round(s.prob*100)+"%"),
-                s.reason?R("div",{style:{color:"#888",marginTop:4,fontStyle:"italic"}},s.reason):null
-              ):R("div",{style:{marginTop:4,color:"#555"}},"No signal: "+
-                (days<=0?"expired":
-                 mid>=8&&mid<=92?"mid-range price ("+mid+"%), no extreme or momentum":
-                 spread>12?"spread too wide ("+spread+"c)":
-                 "does not match any strategy criteria"))
-            ):null
-          );
+                onClick:function(){doTrade(m);}},"Trade")):null);
         })
       ):null,
 
@@ -621,27 +517,32 @@ function App(){
         logs.length===0?R("div",{style:{color:"#555",textAlign:"center",padding:40}},"No logs yet"):null,
         logs.map(function(l,i){
           var c=l.type==="error"?"#ff6b6b":l.type==="success"?"#00ff88":l.type==="warn"?"#f0a030":"#888";
-          return R("div",{key:i,style:{fontSize:11,color:c,padding:"4px 0",borderBottom:"1px solid #111",fontFamily:"monospace",wordBreak:"break-all"}},
+          return R("div",{key:i,style:{fontSize:11,color:c,padding:"4px 0",borderBottom:"1px solid #111",fontFamily:"monospace"}},
             R("span",{style:{color:"#444",marginRight:6}},new Date(l.t).toLocaleTimeString()),l.msg);})
       ):null,
 
       // METRICS TAB
       tab==="metrics"?(function(){var day=ldDay();var mb=maxBet();return R("div",null,
+        // Today
         R("div",{style:cx(P.mc,{borderColor:"#00ff8833"})},R("div",{style:P.mt},"Today ("+new Date().toLocaleDateString()+")"),
           mr("Trades",day.n),mr("W / L",day.w+" / "+day.l),mr("Win Rate",pc(day.w,day.n)),
           mr("P&L",(day.pnl>=0?"+":"")+"$"+(day.pnl/100).toFixed(2)),mr("Leveraged","$"+(day.lev/100).toFixed(2))),
+        // Financial
         R("div",{style:P.mc},R("div",{style:P.mt},"Financial Overview"),
           mr("Balance",ct(bal)),mr("Max Leverage (50%)",ct(mb)),mr("Total Leveraged",ct(met.lv||0)),
           mr("Total P&L",(pnl>=0?"+":"")+"$"+pnl.toFixed(2)),mr("Fees Paid",ct(met.fe||0)),mr("ROI",roi+"%")),
+        // Projections
         R("div",{style:P.mc},R("div",{style:P.mt},"Projections"),
           mr("Trades/Hour",tph.toFixed(1)),
           mr("Avg Win",met.w>0?ct(Math.round(aw)):"--"),mr("Avg Loss",met.l>0?ct(Math.round(al2)):"--"),
           mr("Proj. Daily",(projD>=0?"+$":"-$")+Math.abs(projD).toFixed(2)),
           mr("Proj. Weekly",(projW>=0?"+$":"-$")+Math.abs(projW).toFixed(2)),
           mr("Proj. Monthly",(projW*4.3>=0?"+$":"-$")+Math.abs(projW*4.3).toFixed(2))),
+        // Performance
         R("div",{style:P.mc},R("div",{style:P.mt},"Performance"),
           mr("Evaluated",""+met.ev),mr("Signals",""+met.sg),mr("Attempted",""+met.at),mr("Filled",""+met.fl),
           mr("Fill Rate",pc(met.fl,met.at)),mr("Wins / Losses",met.w+" / "+met.l),mr("Win Rate",pc(met.w,met.fl))),
+        // By strategy
         Object.keys(met.by||{}).length>0?R("div",{style:P.mc},R("div",{style:P.mt},"By Strategy"),
           Object.keys(met.by).map(function(k){var b=met.by[k];if(!b||!b.a)return null;
             return R("div",{key:k,style:{marginBottom:8,paddingBottom:8,borderBottom:"1px solid #1a2230"}},
